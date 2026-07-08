@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+import os
 from pathlib import Path
 import re as _re
 from typing import Any
@@ -52,37 +53,56 @@ def _opercmd_output(command: str, verbose: bool = False) -> str | None:
         return None
 
 
-def _query_sear_smf_dataset_profiles(verbose: bool = False) -> list[str]:
+def _query_sear_smf_dataset_profiles(
+    known_prefixes: list[str],
+    verbose: bool = False,
+) -> list[str]:
     """
-    Use pySEAR to search for RACF dataset profiles whose names contain 'MAN'.
+    Use pySEAR to search for RACF dataset profiles that look like SMF MAN datasets.
 
-    SEAR's search operates on RACF *profiles* (not actual DASD datasets), but
-    profile names reflect the dataset naming convention at the site.  Non-generic
-    profile names are returned as candidate dataset names; generic profiles
-    (containing wildcards) are used to derive sibling patterns for catalog search.
+    SEAR's ``dataset_filter`` is a prefix filter (HLQ), so we use the HLQ(s)
+    derived from datasets already found by earlier sources.  Results are filtered
+    client-side for profiles whose last qualifier starts with 'MAN'.
 
     Silently returns an empty list when sear is not installed.
+    Returns ["__sear_available__"] when installed but no matching profiles found,
+    so the caller can distinguish "not installed" from "installed, no results".
     """
     try:
         from sear import sear  # type: ignore[import-not-found]
     except ImportError:
         return []
 
-    try:
-        result = sear({"operation": "search", "admin_type": "dataset", "dataset_filter": "MAN"})
-        profiles: list[str] = getattr(result, "result", None) or []
-        if not isinstance(profiles, list):
-            return []
-    except Exception as exc:  # noqa: BLE001
-        if verbose:
-            print(f"  SEAR dataset search failed: {exc}", flush=True)
-        return []
+    _MAN_SUFFIX_RE = _re.compile(r"\.MAN[A-Z0-9]*$", _re.IGNORECASE)
 
-    # Return only non-generic profile names (no wildcards) as usable dataset names.
-    candidates = [p for p in profiles if isinstance(p, str) and "*" not in p and "%" not in p]
+    candidates: list[str] = []
+    seen_profiles: set[str] = set()
+
+    for prefix in known_prefixes or [""]:
+        try:
+            kwargs: dict = {"operation": "search", "admin_type": "dataset"}
+            if prefix:
+                kwargs["dataset_filter"] = prefix
+            result = sear(kwargs)
+            profiles: list[str] = getattr(result, "result", None) or []
+            if not isinstance(profiles, list):
+                continue
+        except Exception as exc:  # noqa: BLE001
+            if verbose:
+                print(f"  SEAR search (prefix='{prefix}') failed: {exc}", flush=True)
+            continue
+
+        for p in profiles:
+            if isinstance(p, str) and p not in seen_profiles:
+                seen_profiles.add(p)
+                # Keep only non-generic profiles whose last qualifier looks like MAN*.
+                if "*" not in p and "%" not in p and _MAN_SUFFIX_RE.search(p):
+                    candidates.append(p)
+
     if verbose:
-        print(f"  SEAR found {len(profiles)} dataset profile(s), {len(candidates)} non-generic", flush=True)
-    return candidates
+        print(f"  SEAR searched {len(known_prefixes or [''])} prefix(es), found {len(candidates)} MAN profile(s)", flush=True)
+
+    return candidates if candidates else ["__sear_available__"]
 
 
 def _parse_dsnames_from_output(output: str) -> list[str]:
@@ -111,22 +131,53 @@ def _query_smf_d_datasets(verbose: bool = False) -> list[str]:
     return names
 
 
+def _resolve_smf_variables(names: list[str], sysname: str | None) -> list[str]:
+    """
+    Substitute JCL system variables that appear literally in PARMLIB content.
+
+    SMFPRMxx members use &SYSNAME (and sometimes &SYSPLEX) which are resolved
+    by z/OS at IPL, not at read time.  When we read the raw text we must
+    substitute them ourselves using the live system name.
+    """
+    if not sysname:
+        return [n for n in names if "&" not in n]
+    resolved = []
+    for name in names:
+        name = name.replace("&SYSNAME.", sysname).replace("&SYSNAME", sysname)
+        if "&" not in name:  # drop any remaining unresolvable variables
+            resolved.append(name)
+    return resolved
+
+
 def _query_parmlib_datasets(smfprm_member: str, verbose: bool = False) -> list[str]:
     """
     Read a SMFPRMxx PARMLIB member and parse the DSNAME block.
     The PARMLIB member contains ALL configured MAN datasets regardless of
     their current SMF status.
+
+    JCL system variables such as &SYSNAME are resolved using the live
+    system name before the dataset names are returned.
     """
     try:
         from zoautil_py import datasets  # type: ignore[import-not-found]
     except ImportError:
         return []
 
-    # Try common PARMLIB dataset names; ZOAU list_dataset_names can locate the active one.
+    # Determine current system name for &SYSNAME substitution.
+    sysname: str | None = None
+    try:
+        node = _re.sub(r"[^A-Z0-9#@$]", "", os.uname().nodename.upper())  # type: ignore[attr-defined]
+        sysname = node or None
+    except AttributeError:
+        pass
+    if not sysname:
+        sysname = (os.environ.get("SYSNAME") or os.environ.get("_BPXK_SYSNAME") or "").upper() or None
+
     for parmlib_dsn in (f"SYS1.PARMLIB({smfprm_member})",):
         try:
             content = datasets.read(parmlib_dsn)
-            names = _parse_dsnames_from_output(content)
+            raw_names = _parse_dsnames_from_output(content)
+            names = _resolve_smf_variables(raw_names, sysname)
             if names:
                 if verbose:
                     print(f"  Read {len(names)} dataset(s) from PARMLIB member {smfprm_member}", flush=True)
@@ -263,7 +314,10 @@ def discover_smf_datasets(
         _add(smfd, "D SMF,D")
 
         # --- Source 3: pySEAR RACF profile search ---
-        sear_names = _query_sear_smf_dataset_profiles(verbose=verbose)
+        # Derive HLQ prefixes from datasets already found so SEAR's prefix
+        # filter targets the right part of the catalog.
+        hlq_prefixes = list({n.split(".")[0] for n in seen if "." in n})
+        sear_names = _query_sear_smf_dataset_profiles(hlq_prefixes, verbose=verbose)
         _add(sear_names, "pySEAR")
 
         # --- Source 4: sibling expansion via catalog search ---
