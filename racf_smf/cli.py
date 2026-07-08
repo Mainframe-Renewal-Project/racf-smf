@@ -2,12 +2,65 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import cast
 
 from .analytics import discover_smf_datasets, iter_discovered_security_events, iter_security_events
 from .parser import RecordFormat, iter_smf_records
+
+
+# ---------------------------------------------------------------------------
+# Colour helpers — disabled when stdout is not a TTY or NO_COLOR is set.
+# ---------------------------------------------------------------------------
+
+def _use_color() -> bool:
+    return sys.stderr.isatty() and os.environ.get("NO_COLOR", "") == ""
+
+
+class _C:
+    """ANSI colour codes, swapped to empty strings when colour is off."""
+
+    RESET  = "\033[0m"
+    BOLD   = "\033[1m"
+    DIM    = "\033[2m"
+    CYAN   = "\033[36m"
+    GREEN  = "\033[32m"
+    YELLOW = "\033[33m"
+    RED    = "\033[31m"
+    BLUE   = "\033[34m"
+
+
+def _colored(text: str, *codes: str) -> str:
+    if not _use_color():
+        return text
+    return "".join(codes) + text + _C.RESET
+
+
+def _info(msg: str) -> None:
+    print(_colored(msg, _C.CYAN), file=sys.stderr, flush=True)
+
+
+def _ok(msg: str) -> None:
+    print(_colored(msg, _C.GREEN), file=sys.stderr, flush=True)
+
+
+def _warn(msg: str) -> None:
+    print(_colored(msg, _C.YELLOW), file=sys.stderr, flush=True)
+
+
+def _err(msg: str) -> None:
+    print(_colored(msg, _C.RED), file=sys.stderr, flush=True)
+
+
+def _bold(text: str) -> str:
+    return _colored(text, _C.BOLD)
+
+
+def _dim(text: str) -> str:
+    return _colored(text, _C.DIM)
 
 
 def _parse_subtypes(raw: str) -> set[int]:
@@ -118,17 +171,17 @@ def main() -> int:
     if use_discovery:
         discovered = discover_smf_datasets(args.dataset_patterns or None, verbose=True)
         if not discovered:
-            raise SystemExit(
-                "No SMF datasets found. Try --list-datasets with --dataset-pattern to diagnose."
-            )
+            _err("No SMF datasets found. Try --list-datasets with --dataset-pattern to diagnose.")
+            raise SystemExit(1)
         if args.list_datasets:
-            print(f"\nFound {len(discovered)} dataset(s):")
+            _ok(f"\nFound {len(discovered)} dataset(s):")
             for ds in discovered:
-                print(f"  {ds}")
+                print(f"  {_bold(ds)}", file=sys.stderr)
             return 0
-        print(f"Discovered {len(discovered)} dataset(s): {', '.join(discovered)}", flush=True)
+        _ok(f"Discovered {_bold(str(len(discovered)))} dataset(s): {', '.join(discovered)}")
     elif getattr(args, "list_datasets", False):
-        raise SystemExit("--list-datasets requires discovery mode (omit input or use --discover).")
+        _err("--list-datasets requires discovery mode (omit input or use --discover).")
+        raise SystemExit(1)
 
     def _scan_sources() -> list[str]:
         """Return the list of inputs that will be processed."""
