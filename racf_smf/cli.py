@@ -22,6 +22,10 @@ def _parse_subtypes(raw: str) -> set[int]:
     return values
 
 
+def _is_dataset_source(value: str) -> bool:
+    return value.startswith("mvs://") or (value.startswith("//'") and value.endswith("'"))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="racf-smf",
@@ -69,8 +73,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
-    if not args.input.exists():
-        raise SystemExit(f"Input file not found: {args.input}")
+    if not _is_dataset_source(args.input):
+        input_path = Path(args.input)
+        if not input_path.exists():
+            raise SystemExit(f"Input file not found: {args.input}")
 
     if args.max_records < 0:
         raise SystemExit("--max-records must be >= 0")
