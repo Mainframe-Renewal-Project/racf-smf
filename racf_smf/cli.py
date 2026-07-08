@@ -223,7 +223,7 @@ def main() -> int:
         ordered_labels: list[str] = [label for label in preferred_order if label in sources]
         ordered_labels.extend(label for label in sources if label not in ordered_labels)
 
-        rows: list[tuple[str, str, str]] = []
+        rows: list[tuple[str, str, str, str]] = []
         for label in ordered_labels:
             names = sources.get(label, [])
             status_note = ""
@@ -250,24 +250,18 @@ def main() -> int:
             else:
                 note = ""
 
-            rows.append((marker, label, detail if not note else f"{detail} ({note})"))
+            plain_result = f"{len(names)} dataset(s)" if names else "none"
+            if status_note:
+                plain_result += f" ({status_note})"
+
+            rendered_result = detail if not note else f"{detail} ({note})"
+            rows.append((marker, label, plain_result, rendered_result))
 
         status_header = "Status"
         source_header = "Source"
         result_header = "Result"
-        source_width = max(len(source_header), *(len(label) for _, label, _ in rows))
-        result_width = max(
-            len(result_header),
-            *(
-                len(sources.get(label, [])) and len(f"{len(sources.get(label, []))} dataset(s)") or len("none")
-                if label != "pySEAR" or not sources.get(label, [])
-                else len(f"{len(sources.get(label, []))} dataset(s)")
-                for _, label, _ in rows
-            ),
-            *(len("none") + len(" (not installed)") if label == "pySEAR" and not sear_ok and not sear_err else 0 for _, label, _ in rows),
-            *(len("none") + len(f" (installed - import error: {sear_err[:80]})") if label == "pySEAR" and sear_err else 0 for _, label, _ in rows),
-            *(len(f"{len(sources.get(label, []))} dataset(s)") + len(" (installed)") if label == "pySEAR" and sear_ok else 0 for _, label, _ in rows),
-        )
+        source_width = max(len(source_header), *(len(label) for _, label, _, _ in rows))
+        result_width = max(len(result_header), *(len(plain_result) for _, _, plain_result, _ in rows))
 
         top = f"  ┌{'─' * 3}┬{'─' * (source_width + 2)}┬{'─' * (result_width + 2)}┐"
         mid = f"  ├{'─' * 3}┼{'─' * (source_width + 2)}┼{'─' * (result_width + 2)}┤"
@@ -278,20 +272,9 @@ def main() -> int:
             file=sys.stderr,
         )
         print(mid, file=sys.stderr)
-        for marker, label, rendered_result in rows:
-            plain_result = "none"
-            names = sources.get(label, [])
-            if names:
-                plain_result = f"{len(names)} dataset(s)"
-            if label == "pySEAR":
-                if sear_ok:
-                    plain_result += " (installed)"
-                elif sear_err:
-                    plain_result += f" (installed - import error: {sear_err[:80]})"
-                else:
-                    plain_result += " (not installed)"
+        for marker, label, plain_result, rendered_result in rows:
             print(
-                f"  │ {marker} │ {_pad_plain(label, source_width)} │ {_pad_plain(plain_result, result_width - 0)[:-len(plain_result)] if False else rendered_result}{' ' * max(0, result_width - len(plain_result))} │",
+                f"  │ {marker} │ {_pad_plain(label, source_width)} │ {rendered_result}{' ' * max(0, result_width - len(plain_result))} │",
                 file=sys.stderr,
             )
         print(bot, file=sys.stderr)
