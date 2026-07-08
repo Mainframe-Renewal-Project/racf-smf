@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-import os
 from pathlib import Path
+import re as _re
 from typing import Any
 
 from .parser import RecordFormat, SmfRecord, iter_security_records
@@ -13,32 +13,40 @@ DEFAULT_SMF_DATASET_PATTERNS: tuple[str, ...] = (
     "SYS1.MAN*",
 )
 
+# Matches the DSNAME(...) block in D SMF,O output including continuation lines.
+_DSNAME_BLOCK_RE = _re.compile(r"DSNAME\s*\(([^)]+)\)", _re.DOTALL | _re.IGNORECASE)
 
-def _get_sysname() -> str | None:
-    """Attempt to detect the z/OS system name."""
-    # Environment variable set by z/OS UNIX shell.
-    sysname = os.environ.get("SYSNAME") or os.environ.get("_BPXK_SYSNAME")
-    if sysname:
-        return sysname.strip().upper()
-    # Fallback: uname nodename on z/OS is typically the sysname.
+
+def _query_active_smf_datasets(verbose: bool = False) -> list[str]:
+    """
+    Issue 'D SMF,O' via ZOAU opercmd and parse active DSNAME entries.
+
+    This is naming-convention-agnostic: whatever datasets SMF is actually
+    writing to will be returned regardless of HLQ or site standards.
+    Returns an empty list if opercmd is unavailable or output cannot be parsed.
+    """
     try:
-        node = os.uname().nodename.strip().upper()
-        if node:
-            return node
-    except AttributeError:
-        pass
-    return None
+        from zoautil_py import opercmd  # type: ignore[import-not-found]
+    except ImportError:
+        return []
 
+    try:
+        result = opercmd.execute("D SMF,O")
+        output = getattr(result, "stdout", None) or str(result)
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(f"  opercmd 'D SMF,O' failed: {exc}", flush=True)
+        return []
 
-def _build_default_patterns() -> tuple[str, ...]:
-    sysname = _get_sysname()
-    if sysname:
-        return (
-            f"SYS1.{sysname}.MAN*",
-            "SYS1.*.MAN*",
-            "SYS1.MAN*",
-        )
-    return DEFAULT_SMF_DATASET_PATTERNS
+    match = _DSNAME_BLOCK_RE.search(output)
+    if not match:
+        if verbose:
+            print("  Could not parse DSNAME block from 'D SMF,O' output.", flush=True)
+        return []
+
+    raw = match.group(1)
+    names = [n.strip() for n in raw.replace("\n", ",").split(",") if n.strip()]
+    return names
 
 
 def _list_dataset_names(datasets_module, pattern: str, *, include_migrated: bool) -> list[str]:
@@ -55,7 +63,16 @@ def discover_smf_datasets(
     include_migrated: bool = False,
     verbose: bool = False,
 ) -> list[str]:
-    """Discover candidate SMF MAN datasets using ZOAU dataset listing APIs."""
+    """
+    Discover active SMF datasets.
+
+    Strategy (in order):
+    1. If no custom patterns are given, query 'D SMF,O' via ZOAU opercmd to
+       read the active DSNAME list directly from the running system.  This is
+       naming-convention-agnostic and works for any site.
+    2. Fall back to ZOAU catalog search using the supplied (or default) patterns
+       when opercmd is unavailable or returns no results.
+    """
 
     try:
         from zoautil_py import datasets  # type: ignore[import-not-found]
@@ -64,13 +81,30 @@ def discover_smf_datasets(
             "ZOAU is required for automatic dataset discovery. Install zoautil_py first."
         ) from exc
 
-    selected_patterns = tuple(patterns) if patterns is not None else _build_default_patterns()
-
-    if verbose:
-        print(f"Searching patterns: {', '.join(selected_patterns)}", flush=True)
-
     discovered: list[str] = []
     seen: set[str] = set()
+
+    # --- Primary: read active datasets directly from D SMF,O ---
+    if patterns is None:
+        if verbose:
+            print("Querying active SMF datasets via 'D SMF,O'...", flush=True)
+        live = _query_active_smf_datasets(verbose=verbose)
+        if live:
+            if verbose:
+                print(f"  Found {len(live)} dataset(s) from D SMF,O", flush=True)
+            for name in live:
+                if name not in seen:
+                    seen.add(name)
+                    discovered.append(name)
+            return discovered
+        if verbose:
+            print("  D SMF,O returned no datasets, falling back to catalog search.", flush=True)
+
+    # --- Fallback: catalog search by pattern ---
+    selected_patterns = tuple(patterns) if patterns is not None else DEFAULT_SMF_DATASET_PATTERNS
+
+    if verbose:
+        print(f"Searching catalog patterns: {', '.join(selected_patterns)}", flush=True)
 
     for pattern in selected_patterns:
         names = _list_dataset_names(datasets, pattern, include_migrated=include_migrated)
