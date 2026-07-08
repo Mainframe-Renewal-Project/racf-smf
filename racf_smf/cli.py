@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from .analytics import discover_smf_datasets, iter_discovered_security_events, iter_security_events
-from .parser import RecordFormat
+from .parser import RecordFormat, iter_smf_records
 
 
 def _parse_subtypes(raw: str) -> set[int]:
@@ -110,8 +110,10 @@ def main() -> int:
     subtypes = _parse_subtypes(args.zos_unix_subtypes)
     record_format = cast(RecordFormat, args.format)
     emitted = 0
+    scanned = 0
     type_counter: Counter[int] = Counter()
     tag_counter: Counter[str] = Counter()
+    scanned_types: Counter[int] = Counter()
 
     if use_discovery:
         discovered = discover_smf_datasets(args.dataset_patterns or None, verbose=True)
@@ -128,13 +130,19 @@ def main() -> int:
     elif getattr(args, "list_datasets", False):
         raise SystemExit("--list-datasets requires discovery mode (omit input or use --discover).")
 
+    def _scan_sources() -> list[str]:
+        """Return the list of inputs that will be processed."""
+        if use_discovery:
+            return discovered  # type: ignore[return-value]
+        return [args.input]
+
     def _events():
         if use_discovery:
             yield from iter_discovered_security_events(
                 dataset_patterns=args.dataset_patterns or None,
                 record_format=record_format,
                 strict_man=args.strict_man,
-                include_all=args.all,
+                include_all=True,  # filter below so we can count scanned records
                 zos_unix_subtypes=subtypes,
             )
         else:
@@ -143,13 +151,21 @@ def main() -> int:
                 record_format=record_format,
                 strict_man=args.strict_man,
                 dataset_input=args.dataset_input,
-                include_all=args.all,
+                include_all=True,  # filter below so we can count scanned records
                 zos_unix_subtypes=subtypes,
             )
 
     out_handle = args.json_out.open("w", encoding="utf-8") if args.json_out else None
     try:
         for event in _events():
+            scanned += 1
+            scanned_types[int(event["record_type"])] += 1
+
+            # Apply security filter unless --all was requested.
+            is_security = bool(event["tags"])
+            if not args.all and not is_security:
+                continue
+
             emitted += 1
             type_counter[int(event["record_type"])] += 1
             for tag in event["tags"]:
@@ -167,7 +183,16 @@ def main() -> int:
         if out_handle:
             out_handle.close()
 
-    print(f"Records emitted: {emitted}")
+    print(f"Records scanned: {scanned}, emitted: {emitted}")
+    if scanned and not emitted:
+        top_types = ", ".join(
+            f"type {t}:{n}" for t, n in scanned_types.most_common(5)
+        )
+        print(f"  No security records (type 80/83) found in scanned data.")
+        print(f"  Top record types seen: {top_types}")
+        print(f"  Tip: run with --all to emit all {scanned} records and inspect types.")
+    if not scanned:
+        print("  No records could be read. Check --format (try --format man or --format rdw).")
     if type_counter:
         summary = ", ".join(f"{record_type}:{count}" for record_type, count in sorted(type_counter.items()))
         print(f"By record type: {summary}")
