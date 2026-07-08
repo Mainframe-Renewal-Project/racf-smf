@@ -53,6 +53,16 @@ def _opercmd_output(command: str, verbose: bool = False) -> str | None:
         return None
 
 
+def _sear_available() -> bool:
+    """Return True if the pySEAR package is importable."""
+    try:
+        import importlib
+        importlib.import_module("sear")
+        return True
+    except ImportError:
+        return False
+
+
 def _query_sear_smf_dataset_profiles(
     known_prefixes: list[str],
     verbose: bool = False,
@@ -102,7 +112,7 @@ def _query_sear_smf_dataset_profiles(
     if verbose:
         print(f"  SEAR searched {len(known_prefixes or [''])} prefix(es), found {len(candidates)} MAN profile(s)", flush=True)
 
-    return candidates if candidates else ["__sear_available__"]
+    return candidates if candidates else []
 
 
 def _parse_dsnames_from_output(output: str) -> list[str]:

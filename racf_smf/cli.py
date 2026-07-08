@@ -8,7 +8,12 @@ from collections import Counter
 from pathlib import Path
 from typing import cast
 
-from .analytics import discover_smf_datasets, iter_discovered_security_events, iter_security_events
+from .analytics import (
+    _sear_available,
+    discover_smf_datasets,
+    iter_discovered_security_events,
+    iter_security_events,
+)
 from .parser import RecordFormat
 
 
@@ -175,15 +180,19 @@ def main() -> int:
         )
 
         # Print source summary to stderr.
+        sear_installed = _sear_available()
         print(_bold("Discovery sources:"), file=sys.stderr)
         for label, names in sources.items():
+            suffix = ""
+            if label == "pySEAR":
+                suffix = _dim(f"  ({'installed' if sear_installed else 'not installed'})")
             if names:
                 marker = _colored("✔", _C.GREEN)
                 detail = _colored(f"{len(names)} dataset(s)", _C.GREEN)
             else:
                 marker = _colored("✘", _C.DIM)
                 detail = _dim("none")
-            print(f"  {marker} {label:<30} {detail}", file=sys.stderr)
+            print(f"  {marker} {label:<30} {detail}{suffix}", file=sys.stderr)
 
         if not discovered:
             _err("No SMF datasets found. Try --list-datasets with --dataset-pattern to diagnose.")
