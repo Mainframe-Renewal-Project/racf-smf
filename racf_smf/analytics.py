@@ -15,6 +15,8 @@ DEFAULT_SMF_DATASET_PATTERNS: tuple[str, ...] = (
 
 # Matches the DSNAME(...) block in D SMF,O output including continuation lines.
 _DSNAME_BLOCK_RE = _re.compile(r"DSNAME\s*\(([^)]+)\)", _re.DOTALL | _re.IGNORECASE)
+# Matches LOGSTREAM(...) entries in SMFPRMxx or D SMF,O output.
+_LOGSTREAM_RE = _re.compile(r"LOGSTREAM\s*\(\s*([^)]+)\)", _re.DOTALL | _re.IGNORECASE)
 
 
 def _derive_sibling_pattern(dataset_name: str) -> str | None:
@@ -101,7 +103,40 @@ def _query_parmlib_datasets(smfprm_member: str, verbose: bool = False) -> list[s
     return []
 
 
-def _query_active_smf_datasets(verbose: bool = False) -> list[str]:
+def _query_logstream_names(output: str) -> list[str]:
+    """Extract logstream names from a LOGSTREAM(...) block in operator output."""
+    match = _LOGSTREAM_RE.search(output)
+    if not match:
+        return []
+    raw = match.group(1)
+    return [n.strip() for n in raw.replace("\n", ",").split(",") if n.strip()]
+
+
+def _read_logstream_records(logstream_name: str) -> list[bytes]:
+    """
+    Attempt to read SMF records from a z/OS logstream via ZOAU.
+
+    ZOAU does not yet expose a dedicated logstream API, so we attempt to
+    read the logstream as a dataset.  If the site has bridged its SMF
+    logstream to a coupling facility or DASD log, ZOAU's dataset.read_as_bytes
+    may succeed.  Returns an empty list when the logstream cannot be read.
+
+    Note: reading directly from in-memory SMF buffers in common storage (as
+    zSecure does from an APF-authorized started task) is not possible from a
+    USS Python process.
+    """
+    try:
+        from zoautil_py import datasets  # type: ignore[import-not-found]
+    except ImportError:
+        return []
+    try:
+        records = datasets.read_as_bytes(logstream_name, records=0)
+        return records if isinstance(records, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+
     """
     Issue 'D SMF,O' via ZOAU opercmd and parse active DSNAME entries.
     Also extracts the active SMFPRMxx member name so the PARMLIB member
