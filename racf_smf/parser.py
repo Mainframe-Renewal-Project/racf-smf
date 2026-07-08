@@ -1076,6 +1076,7 @@ def _decode_1154_common_context(payload: bytes, common_offset: int | None) -> di
         "version": _u16(payload, common_offset),
         "more_records_follow": _u8(payload, common_offset + 2) == 1,
         "sequence_number": _u8(payload, common_offset + 3),
+        "release": _u32(payload, common_offset + 4),
         "system_name": _decode_fixed_identifier(payload[common_offset + 8 : common_offset + 16]),
         "sysplex_name": _decode_fixed_identifier(payload[common_offset + 16 : common_offset + 24]),
         "user_id": _decode_fixed_identifier(payload[common_offset + 24 : common_offset + 32]),
@@ -1199,15 +1200,40 @@ def _decode_type1154_subtype83_fields(payload: bytes) -> _DecodedFieldPatch:
     triplets_start = header["header_end"]
     common_offset: int | None = None
     subtype_start: int | None = None
+    common_triplets: dict[str, int | None] | None = None
     if triplets_start >= 0 and triplets_start + 20 <= len(payload):
+        common_triplet_count = _u16(payload, triplets_start)
         common_record_offset = _u32(payload, triplets_start + 4)
+        common_record_length = _u16(payload, triplets_start + 8)
+        common_record_count = _u16(payload, triplets_start + 10)
         subtype_record_offset = _u32(payload, triplets_start + 12)
+        subtype_record_length = _u16(payload, triplets_start + 16)
+        subtype_record_count = _u16(payload, triplets_start + 18)
+        common_triplets = {
+            "triplet_count": common_triplet_count,
+            "common_header_offset": common_record_offset,
+            "common_header_length": common_record_length,
+            "common_header_count": common_record_count,
+            "subtype_specific_offset": subtype_record_offset,
+            "subtype_specific_length": subtype_record_length,
+            "subtype_specific_count": subtype_record_count,
+        }
         if common_record_offset is not None:
             common_offset = _payload_offset_from_record_offset(common_record_offset, adjust, len(payload))
         if subtype_record_offset is not None:
             subtype_start = _payload_offset_from_record_offset(subtype_record_offset, adjust, len(payload))
 
     context = _decode_1154_common_context(payload, common_offset)
+    if context is not None:
+        context["common_triplets"] = common_triplets
+        context["record_set_key"] = {
+            "subtype": header["subtype"],
+            "system_name": context.get("system_name"),
+            "sysplex_name": context.get("sysplex_name"),
+            "job_name": context.get("job_name"),
+            "request_id": context.get("request_id"),
+            "correlator": context.get("correlator"),
+        }
     summary: dict[str, Any] | None = None
     findings: list[dict[str, Any]] = []
     resource_candidates: list[str] = []

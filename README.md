@@ -122,6 +122,13 @@ At the end, the CLI prints summary counters by record type and tag.
 RACF compliance evidence records, SMF type 1154 subtype 83, are emitted with
 `event_family="RACF_COMPLIANCE"` and include decoded compliance fields such as
 `compliance_context`, `compliance_summary`, and `compliance_findings`.
+The `compliance_context` includes IBM-recommended continuation/correlation
+fields: `more_records_follow`, `sequence_number`, `request_id`, `correlator`,
+and `record_set_key`. It also includes common-area mapping fields such as
+`release` and `common_triplets`, which describe the common header and
+subtype-specific section offsets, lengths, and counts. Use these fields to group
+related 1154 records when a large evidence response is split across multiple SMF
+records.
 
 RACF initialization records, SMF type 81, are emitted with
 `event_family="RACF_INIT"` and include IPL-time RACF configuration in
