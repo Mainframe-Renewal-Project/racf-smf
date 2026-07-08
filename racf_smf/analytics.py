@@ -769,6 +769,8 @@ def record_to_event(record: SmfRecord, *, source: str | None = None) -> dict[str
         event_family = "RACF"
     elif "ZOS_UNIX_SECURITY" in record.tags:
         event_family = "ZOS_UNIX_SECURITY"
+    elif "RACF_COMPLIANCE" in record.tags:
+        event_family = "RACF_COMPLIANCE"
     else:
         event_family = "OTHER"
 
@@ -802,6 +804,9 @@ def record_to_event(record: SmfRecord, *, source: str | None = None) -> dict[str
         "distributed_identity_user_name": record.distributed_identity_user_name,
         "distributed_identity_registry": record.distributed_identity_registry,
         "action_hint": record.action_hint,
+        "compliance_context": record.compliance_context,
+        "compliance_summary": record.compliance_summary,
+        "compliance_findings": tuple(record.compliance_findings),
         "user_id_candidates": tuple(record.user_id_candidates),
         "resource_candidates": tuple(record.resource_candidates),
         "text_tokens": tuple(record.text_tokens),

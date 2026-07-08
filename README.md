@@ -18,6 +18,7 @@ The package is designed for two use cases:
 - Filters by default to security-relevant records:
   - RACF security events: SMF type 80
   - z/OS UNIX security events: SMF type 83 with subtypes 2, 3, or 4
+  - RACF compliance evidence: SMF type 1154 subtype 83
 - Supports `--all` to emit all SMF records.
 
 ## Project structure
@@ -115,6 +116,10 @@ Each emitted line is JSON, for example:
 ```
 
 At the end, the CLI prints summary counters by record type and tag.
+
+RACF compliance evidence records, SMF type 1154 subtype 83, are emitted with
+`event_family="RACF_COMPLIANCE"` and include decoded compliance fields such as
+`compliance_context`, `compliance_summary`, and `compliance_findings`.
 
 ## Python API for pySEAR and analytics
 

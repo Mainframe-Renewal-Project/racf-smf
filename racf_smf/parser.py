@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import struct
 import tempfile
-from typing import Iterator, Literal, TypedDict
+from typing import Any, Iterator, Literal, TypedDict
 
 
 RecordFormat = Literal["auto", "rdw", "smf", "man"]
@@ -39,6 +39,9 @@ class _DecodedFieldPatch(TypedDict, total=False):
     distributed_identity_user_name: str | None
     distributed_identity_registry: str | None
     action_hint: str | None
+    compliance_context: dict[str, Any] | None
+    compliance_summary: dict[str, Any] | None
+    compliance_findings: tuple[dict[str, Any], ...]
     user_id_candidates: tuple[str, ...]
     resource_candidates: tuple[str, ...]
     text_tokens: tuple[str, ...]
@@ -70,6 +73,9 @@ class _DecodedFields(TypedDict):
     distributed_identity_user_name: str | None
     distributed_identity_registry: str | None
     action_hint: str | None
+    compliance_context: dict[str, Any] | None
+    compliance_summary: dict[str, Any] | None
+    compliance_findings: tuple[dict[str, Any], ...]
     user_id_candidates: tuple[str, ...]
     resource_candidates: tuple[str, ...]
     text_tokens: tuple[str, ...]
@@ -107,6 +113,9 @@ class SmfRecord:
     distributed_identity_user_name: str | None
     distributed_identity_registry: str | None
     action_hint: str | None
+    compliance_context: dict[str, Any] | None
+    compliance_summary: dict[str, Any] | None
+    compliance_findings: tuple[dict[str, Any], ...]
     user_id_candidates: tuple[str, ...]
     resource_candidates: tuple[str, ...]
     text_tokens: tuple[str, ...]
@@ -655,6 +664,260 @@ def _decode_type83_fields(payload: bytes) -> _DecodedFieldPatch:
     }
 
 
+def _decode_status(value: int | None, labels: dict[int, str]) -> str | None:
+    if value is None:
+        return None
+    return labels.get(value, f"UNKNOWN({value})")
+
+
+def _u8(data: bytes, offset: int) -> int | None:
+    if offset >= len(data):
+        return None
+    return data[offset]
+
+
+def _record_offset_candidates(offset: int) -> tuple[int, ...]:
+    return (offset, offset - 4) if offset >= 4 else (offset,)
+
+
+def _find_extended_1154_header(payload: bytes) -> dict[str, int] | None:
+    for adjust in (0, -4):
+        rty_offset = 5 + adjust
+        subtype_offset = 22 + adjust
+        version_offset = 26 + adjust
+        ext_type_offset = 52 + adjust
+        if min(rty_offset, subtype_offset, version_offset, ext_type_offset) < 0:
+            continue
+        if ext_type_offset + 2 > len(payload):
+            continue
+        if payload[rty_offset] != 126:
+            continue
+        extended_type = _u16(payload, ext_type_offset)
+        subtype = _u16(payload, subtype_offset)
+        version = payload[version_offset]
+        if extended_type == 1154 and subtype == 83 and version in (1, 2):
+            return {
+                "adjust": adjust,
+                "header_end": (56 if version == 1 else 92) + adjust,
+                "subtype": subtype,
+                "system": 14 + adjust,
+                "time": 6 + adjust,
+                "date": 10 + adjust,
+            }
+    return None
+
+
+def _payload_offset_from_record_offset(record_offset: int, adjust: int, payload_len: int) -> int | None:
+    offset = record_offset + adjust
+    if 0 <= offset < payload_len:
+        return offset
+    return None
+
+
+def _decode_1154_common_context(payload: bytes, common_offset: int | None) -> dict[str, Any] | None:
+    if common_offset is None or common_offset + 60 > len(payload):
+        return None
+    return {
+        "version": _u16(payload, common_offset),
+        "more_records_follow": _u8(payload, common_offset + 2) == 1,
+        "sequence_number": _u8(payload, common_offset + 3),
+        "system_name": _decode_fixed_identifier(payload[common_offset + 8 : common_offset + 16]),
+        "sysplex_name": _decode_fixed_identifier(payload[common_offset + 16 : common_offset + 24]),
+        "user_id": _decode_fixed_identifier(payload[common_offset + 24 : common_offset + 32]),
+        "job_name": _decode_fixed_identifier(payload[common_offset + 32 : common_offset + 40]),
+        "request_id": _decode_ebcdic_field(payload[common_offset + 40 : common_offset + 56]),
+        "correlator": _u32(payload, common_offset + 56),
+    }
+
+
+def _decode_racf_admin_audit(value: int | None) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    names = (
+        (0x01, "SAUDIT"),
+        (0x02, "CMDVIOL"),
+        (0x04, "OPERAUDIT"),
+    )
+    return tuple(name for bit, name in names if value & bit)
+
+
+def _decode_1154_summary(section: bytes) -> dict[str, Any]:
+    password_rules: list[dict[str, Any]] = []
+    if len(section) >= 108:
+        for index in range(8):
+            offset = 28 + (index * 10)
+            min_length = section[offset]
+            rule = _decode_ebcdic_field(section[offset + 1 : offset + 9])
+            max_length = section[offset + 9]
+            if rule:
+                password_rules.append({"minimum_length": min_length, "rule": rule, "maximum_length": max_length})
+
+    return {
+        "version": _u16(section, 0),
+        "eye_catcher": _decode_ebcdic_field(section[4:8]) if len(section) >= 8 else None,
+        "racf_fmid": _decode_ebcdic_field(section[8:12]) if len(section) >= 12 else None,
+        "racf_status": _decode_status(_u8(section, 19), {0: "ACTIVE", 1: "FAILSOFT"}) if _u8(section, 18) == 1 else None,
+        "statistics_bypassed": _decode_status(_u8(section, 21), {0: "NO", 1: "YES"}) if _u8(section, 20) == 1 else None,
+        "default_ibmuser_revoked": _decode_status(_u8(section, 23), {0: "NO", 1: "YES"}) if _u8(section, 22) == 1 else None,
+        "administrator_audit_options": _decode_racf_admin_audit(_u8(section, 25)) if _u8(section, 24) == 1 else (),
+        "password_rules": tuple(password_rules),
+        "lowercase_passwords_allowed": _decode_status(_u8(section, 109), {0: "NO", 1: "YES"}) if _u8(section, 108) == 1 else None,
+        "special_password_chars_allowed": _decode_status(_u8(section, 111), {0: "NO", 1: "YES"}) if _u8(section, 110) == 1 else None,
+        "password_exit_configured": _decode_status(_u8(section, 115), {0: "NO", 1: "YES"}) if _u8(section, 114) == 1 else None,
+        "password_interval": _u8(section, 117) if _u8(section, 116) == 1 else None,
+        "password_minimum_lifetime": _u8(section, 119) if _u8(section, 118) == 1 else None,
+        "password_history_count": _u8(section, 121) if _u8(section, 120) == 1 else None,
+        "maximum_failed_password_attempts": _u8(section, 123) if _u8(section, 122) == 1 else None,
+        "maximum_password_inactivity_days": _u8(section, 125) if _u8(section, 124) == 1 else None,
+        "default_rvary_switch_password_in_use": _decode_status(_u8(section, 127), {0: "NO", 1: "YES"}) if _u8(section, 126) == 1 else None,
+        "default_rvary_status_password_in_use": _decode_status(_u8(section, 129), {0: "NO", 1: "YES"}) if _u8(section, 128) == 1 else None,
+        "password_encryption": _decode_status(_u8(section, 131), {0: "LEGACY", 1: "KDFAES"}) if _u8(section, 130) == 1 else None,
+        "protectall_fail": _decode_status(_u8(section, 133), {0: "NO", 1: "YES"}) if _u8(section, 132) == 1 else None,
+        "dataset_generic_profiles_enabled": _decode_status(_u8(section, 135), {0: "NO", 1: "YES"}) if _u8(section, 134) == 1 else None,
+        "catdsns": _decode_status(_u8(section, 137), {0: "NOCATDSNS", 1: "CATDSNS"}) if _u8(section, 136) == 1 else None,
+        "erase_all_enabled": _decode_status(_u8(section, 139), {0: "NO", 1: "YES"}) if _u8(section, 138) == 1 else None,
+        "aceechk_active": _decode_status(_u8(section, 141), {0: "NO", 1: "YES"}) if _u8(section, 140) == 1 else None,
+        "aceechk_raclisted": _decode_status(_u8(section, 143), {0: "NO", 1: "YES"}) if _u8(section, 142) == 1 else None,
+        "batchallracf": _decode_status(_u8(section, 145), {0: "NOBATCHALLRACF", 1: "BATCHALLRACF"}) if _u8(section, 144) == 1 else None,
+    }
+
+
+def _decode_1154_profile_finding(section_name: str, data: bytes) -> dict[str, Any]:
+    return {
+        "section": section_name,
+        "resource_name": _decode_ebcdic_field(data[0:246]) if len(data) >= 246 else None,
+        "class_name": _decode_fixed_identifier(data[246:254]) if len(data) >= 254 else None,
+        "profile_status_known": _u8(data, 254) == 1,
+        "profile_exists": _decode_status(_u8(data, 255), {0: "NO", 1: "YES"}) if _u8(data, 254) == 1 else None,
+        "uacc": _u8(data, 256),
+        "audit": _u8(data, 257),
+        "audit_success": _u8(data, 258),
+        "audit_failure": _u8(data, 259),
+        "gaudit": _u8(data, 260),
+        "id_star_on_access_list": _decode_status(_u8(data, 264), {0: "NO", 1: "YES"}) if len(data) > 264 else None,
+        "id_star_access": _u8(data, 265),
+    }
+
+
+def _decode_1154_dataset_finding(data: bytes) -> dict[str, Any]:
+    return {
+        "section": "RACFAPFL_DATASET",
+        "dataset_name": _decode_ebcdic_field(data[0:44]) if len(data) >= 44 else None,
+        "volume": _decode_ebcdic_field(data[44:50]) if len(data) >= 50 else None,
+        "profile_status_known": _u8(data, 50) == 1,
+        "profile_exists": _decode_status(_u8(data, 51), {0: "NO", 1: "YES"}) if _u8(data, 50) == 1 else None,
+        "uacc": _u8(data, 52),
+        "warning": _u8(data, 53),
+        "id_star_on_access_list": _decode_status(_u8(data, 54), {0: "NO", 1: "YES"}) if len(data) > 54 else None,
+        "id_star_access": _u8(data, 55),
+        "dataset_type": _decode_ebcdic_field(data[56:57]) if len(data) >= 57 else None,
+    }
+
+
+def _decode_1154_actl_finding(data: bytes) -> dict[str, Any]:
+    return {
+        "section": "RACFACTL",
+        "module_name": _decode_fixed_identifier(data[0:8]) if len(data) >= 8 else None,
+        "authorization_code": _u32(data, 8),
+        "in_lpa": _decode_status(_u8(data, 12), {0: "NO", 1: "YES"}) if len(data) > 12 else None,
+    }
+
+
+def _section_offset(payload: bytes, subtype_start: int, section_relative_offset: int | None, adjust: int) -> int | None:
+    if section_relative_offset is None:
+        return None
+    relative = subtype_start + section_relative_offset
+    if 0 <= relative < len(payload):
+        return relative
+    absolute = section_relative_offset + adjust
+    if 0 <= absolute < len(payload):
+        return absolute
+    return None
+
+
+def _decode_type1154_subtype83_fields(payload: bytes) -> _DecodedFieldPatch:
+    header = _find_extended_1154_header(payload)
+    if header is None:
+        return {}
+
+    adjust = header["adjust"]
+    triplets_start = header["header_end"]
+    common_offset: int | None = None
+    subtype_start: int | None = None
+    if triplets_start >= 0 and triplets_start + 20 <= len(payload):
+        common_record_offset = _u32(payload, triplets_start + 4)
+        subtype_record_offset = _u32(payload, triplets_start + 12)
+        if common_record_offset is not None:
+            common_offset = _payload_offset_from_record_offset(common_record_offset, adjust, len(payload))
+        if subtype_record_offset is not None:
+            subtype_start = _payload_offset_from_record_offset(subtype_record_offset, adjust, len(payload))
+
+    context = _decode_1154_common_context(payload, common_offset)
+    summary: dict[str, Any] | None = None
+    findings: list[dict[str, Any]] = []
+    resource_candidates: list[str] = []
+    text_tokens: list[str] = []
+
+    if subtype_start is not None and subtype_start + 36 <= len(payload):
+        section_defs = (
+            ("RACFSMRY", _u32(payload, subtype_start + 4), _u16(payload, subtype_start + 8), _u16(payload, subtype_start + 10)),
+            ("RACFCRIT", _u32(payload, subtype_start + 12), _u16(payload, subtype_start + 16), _u16(payload, subtype_start + 18)),
+            ("RACFAPFL", _u32(payload, subtype_start + 20), _u16(payload, subtype_start + 24), _u16(payload, subtype_start + 26)),
+            ("RACFACTL", _u32(payload, subtype_start + 28), _u16(payload, subtype_start + 32), _u16(payload, subtype_start + 34)),
+        )
+        for section_name, section_offset, section_length, section_count in section_defs:
+            start = _section_offset(payload, subtype_start, section_offset, adjust)
+            if start is None or section_length is None or section_count is None or section_length <= 0:
+                continue
+            for index in range(section_count):
+                item_start = start + (index * section_length)
+                item_end = item_start + section_length
+                if item_end > len(payload):
+                    break
+                section_data = payload[item_start:item_end]
+                if section_name == "RACFSMRY" and index == 0:
+                    summary = _decode_1154_summary(section_data)
+                elif section_name == "RACFCRIT":
+                    finding = _decode_1154_profile_finding(section_name, section_data)
+                    findings.append(finding)
+                    for value in (finding.get("resource_name"), finding.get("class_name")):
+                        if value:
+                            resource_candidates.append(str(value))
+                elif section_name == "RACFAPFL":
+                    finding = _decode_1154_dataset_finding(section_data) if section_length <= 80 else _decode_1154_profile_finding(section_name, section_data)
+                    findings.append(finding)
+                    for value in (finding.get("dataset_name"), finding.get("resource_name"), finding.get("class_name")):
+                        if value:
+                            resource_candidates.append(str(value))
+                elif section_name == "RACFACTL":
+                    finding = _decode_1154_actl_finding(section_data)
+                    findings.append(finding)
+                    if finding.get("module_name"):
+                        text_tokens.append(str(finding["module_name"]))
+
+    user_id = context.get("user_id") if context else None
+    job_name = context.get("job_name") if context else None
+    system_id = _decode_system_id(payload[header["system"] : header["system"] + 4]) if header["system"] + 4 <= len(payload) else None
+    timestamp = _decode_smf_timestamp(payload, time_offset=header["time"], date_offset=header["date"])
+
+    return {
+        "record_type": 1154,
+        "subtype": 83,
+        "system_id": system_id,
+        "timestamp": timestamp,
+        "user_id": user_id,
+        "job_name": job_name,
+        "product_name": "RACF",
+        "action_hint": "RACF_COMPLIANCE_EVIDENCE",
+        "compliance_context": context,
+        "compliance_summary": summary,
+        "compliance_findings": tuple(findings),
+        "user_id_candidates": _unique_preserve_order([user_id] if user_id else []),
+        "resource_candidates": _unique_preserve_order(resource_candidates[:20]),
+        "text_tokens": _unique_preserve_order(text_tokens[:20]),
+    }
+
+
 def _classify(record_type: int, subtype: int | None, zos_unix_subtypes: set[int]) -> list[str]:
     tags: list[str] = []
     if record_type == 80:
@@ -663,6 +926,9 @@ def _classify(record_type: int, subtype: int | None, zos_unix_subtypes: set[int]
     if record_type == 83:
         if subtype is None or subtype in zos_unix_subtypes:
             tags.append("ZOS_UNIX_SECURITY")
+
+    if record_type == 1154 and subtype == 83:
+        tags.append("RACF_COMPLIANCE")
 
     return tags
 
@@ -686,7 +952,8 @@ def _extract_fields(payload: bytes) -> _DecodedFields:
     if len(payload) < 5:
         raise ValueError("Record payload too short to determine record type")
 
-    record_type = payload[4]
+    compliance_fields = _decode_type1154_subtype83_fields(payload)
+    record_type = int(compliance_fields.get("record_type", payload[4]))
     decoded: _DecodedFields = {
         "record_type": record_type,
         "subtype": None,
@@ -713,12 +980,17 @@ def _extract_fields(payload: bytes) -> _DecodedFields:
         "distributed_identity_user_name": None,
         "distributed_identity_registry": None,
         "action_hint": None,
+        "compliance_context": None,
+        "compliance_summary": None,
+        "compliance_findings": (),
         "user_id_candidates": (),
         "resource_candidates": (),
         "text_tokens": (),
     }
 
-    if record_type == 80:
+    if compliance_fields:
+        decoded.update(compliance_fields)
+    elif record_type == 80:
         decoded.update(_decode_type80_fields(payload))
     elif record_type == 83:
         decoded.update(_decode_type83_fields(payload))
@@ -978,6 +1250,9 @@ def iter_smf_records(
             distributed_identity_user_name=decoded["distributed_identity_user_name"],
             distributed_identity_registry=decoded["distributed_identity_registry"],
             action_hint=decoded["action_hint"],
+            compliance_context=decoded["compliance_context"],
+            compliance_summary=decoded["compliance_summary"],
+            compliance_findings=decoded["compliance_findings"],
             user_id_candidates=decoded["user_id_candidates"],
             resource_candidates=decoded["resource_candidates"],
             text_tokens=decoded["text_tokens"],
