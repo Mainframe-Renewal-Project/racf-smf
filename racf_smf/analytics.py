@@ -15,7 +15,6 @@ _SEAR_SENTINEL = "__sear_available__"
 DEFAULT_SMF_DATASET_PATTERNS: tuple[str, ...] = (
     "SYS1.*.MAN*",
     "SYS1.MAN*",
-    "*.SMF*.*",
     "*.SMF*.*.**",
 )
 
@@ -925,8 +924,12 @@ def discover_smf_datasets(
 
     selected_patterns = tuple(patterns) if patterns is not None else DEFAULT_SMF_DATASET_PATTERNS
     catalog_hits: list[str] = []
+    searched_catalog_patterns: set[str] = set()
     for pattern in selected_patterns:
         for catalog_pattern in _catalog_pattern_variants(pattern):
+            if catalog_pattern in searched_catalog_patterns:
+                continue
+            searched_catalog_patterns.add(catalog_pattern)
             catalog_hits.extend(
                 _list_dataset_names(datasets, catalog_pattern, include_migrated=include_migrated)
             )
