@@ -68,6 +68,11 @@ def _dim(text: str) -> str:
     return _colored(text, _C.DIM)
 
 
+def _pad_plain(text: str, width: int) -> str:
+    """Pad text to a fixed width based on plain string length."""
+    return text + " " * max(0, width - len(text))
+
+
 def _parse_subtypes(raw: str) -> set[int]:
     values: set[int] = set()
     for part in raw.split(","):
@@ -218,23 +223,78 @@ def main() -> int:
         ordered_labels: list[str] = [label for label in preferred_order if label in sources]
         ordered_labels.extend(label for label in sources if label not in ordered_labels)
 
+        rows: list[tuple[str, str, str]] = []
         for label in ordered_labels:
             names = sources.get(label, [])
-            suffix = ""
+            status_note = ""
             if label == "pySEAR":
                 if sear_ok:
-                    suffix = _dim("  (installed)")
+                    status_note = "installed"
                 elif sear_err:
-                    suffix = _colored(f"  (installed - import error: {sear_err[:80]})", _C.YELLOW)
+                    status_note = f"installed - import error: {sear_err[:80]}"
                 else:
-                    suffix = _dim("  (not installed)")
+                    status_note = "not installed"
+
             if names:
                 marker = _colored("✔", _C.GREEN)
                 detail = _colored(f"{len(names)} dataset(s)", _C.GREEN)
             else:
                 marker = _colored("✘", _C.DIM)
                 detail = _dim("none")
-            print(f"  {marker} {label:<30} {detail}{suffix}", file=sys.stderr)
+
+            if status_note:
+                if label == "pySEAR" and sear_err:
+                    note = _colored(status_note, _C.YELLOW)
+                else:
+                    note = _dim(status_note)
+            else:
+                note = ""
+
+            rows.append((marker, label, detail if not note else f"{detail} ({note})"))
+
+        status_header = "Status"
+        source_header = "Source"
+        result_header = "Result"
+        source_width = max(len(source_header), *(len(label) for _, label, _ in rows))
+        result_width = max(
+            len(result_header),
+            *(
+                len(sources.get(label, [])) and len(f"{len(sources.get(label, []))} dataset(s)") or len("none")
+                if label != "pySEAR" or not sources.get(label, [])
+                else len(f"{len(sources.get(label, []))} dataset(s)")
+                for _, label, _ in rows
+            ),
+            *(len("none") + len(" (not installed)") if label == "pySEAR" and not sear_ok and not sear_err else 0 for _, label, _ in rows),
+            *(len("none") + len(f" (installed - import error: {sear_err[:80]})") if label == "pySEAR" and sear_err else 0 for _, label, _ in rows),
+            *(len(f"{len(sources.get(label, []))} dataset(s)") + len(" (installed)") if label == "pySEAR" and sear_ok else 0 for _, label, _ in rows),
+        )
+
+        top = f"  ┌{'─' * 3}┬{'─' * (source_width + 2)}┬{'─' * (result_width + 2)}┐"
+        mid = f"  ├{'─' * 3}┼{'─' * (source_width + 2)}┼{'─' * (result_width + 2)}┤"
+        bot = f"  └{'─' * 3}┴{'─' * (source_width + 2)}┴{'─' * (result_width + 2)}┘"
+        print(top, file=sys.stderr)
+        print(
+            f"  │ {_pad_plain(status_header, 1)} │ {_pad_plain(source_header, source_width)} │ {_pad_plain(result_header, result_width)} │",
+            file=sys.stderr,
+        )
+        print(mid, file=sys.stderr)
+        for marker, label, rendered_result in rows:
+            plain_result = "none"
+            names = sources.get(label, [])
+            if names:
+                plain_result = f"{len(names)} dataset(s)"
+            if label == "pySEAR":
+                if sear_ok:
+                    plain_result += " (installed)"
+                elif sear_err:
+                    plain_result += f" (installed - import error: {sear_err[:80]})"
+                else:
+                    plain_result += " (not installed)"
+            print(
+                f"  │ {marker} │ {_pad_plain(label, source_width)} │ {_pad_plain(plain_result, result_width - 0)[:-len(plain_result)] if False else rendered_result}{' ' * max(0, result_width - len(plain_result))} │",
+                file=sys.stderr,
+            )
+        print(bot, file=sys.stderr)
 
         if not discovered:
             _err("No SMF datasets found. Try --list-datasets with --dataset-pattern to diagnose.")
