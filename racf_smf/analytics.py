@@ -222,6 +222,52 @@ def _query_parmlib_datasets(smfprm_member: str, verbose: bool = False) -> list[s
     return []
 
 
+def _query_zsystem_parmlib_search(verbose: bool = False) -> list[str]:
+    """
+    Use zsystem.search_parmlib as a broad fallback to find SMF-related
+    dataset names in the active parmlib concatenation.
+
+    This searches for DSNAME( and LOGSTREAM( tokens across parmlib members,
+    then resolves any literal &SYSNAME variables using the live system name.
+    """
+    try:
+        from zoautil_py import zsystem  # type: ignore[import-not-found]
+    except ImportError:
+        return []
+
+    sysname: str | None = None
+    try:
+        node = _re.sub(r"[^A-Z0-9#@$]", "", os.uname().nodename.upper())  # type: ignore[attr-defined]
+        sysname = node or None
+    except AttributeError:
+        pass
+    if not sysname:
+        sysname = (os.environ.get("SYSNAME") or os.environ.get("_BPXK_SYSNAME") or "").upper() or None
+
+    candidates: list[str] = []
+    for needle in ("DSNAME(", "LOGSTREAM("):
+        try:
+            output = zsystem.search_parmlib(needle, ignore_case=True, display_lines=True)
+        except Exception as exc:  # noqa: BLE001
+            if verbose:
+                print(f"  zsystem.search_parmlib('{needle}') failed: {exc}", flush=True)
+            continue
+
+        raw_names = _parse_dsnames_from_output(output)
+        if not raw_names:
+            raw_names = _re.findall(r"\b([A-Z#@$][A-Z0-9#@$]{0,7}(?:\.[A-Z0-9#@$]{1,8}){1,21})\b", output)
+
+        resolved = _resolve_smf_variables(raw_names, sysname)
+        for name in resolved:
+            if name not in candidates:
+                candidates.append(name)
+
+    if verbose:
+        print(f"  zsystem.search_parmlib found {len(candidates)} candidate dataset(s)", flush=True)
+
+    return candidates
+
+
 def _query_logstream_names(output: str) -> list[str]:
     """Extract logstream names from a LOGSTREAM(...) block in operator output."""
     match = _LOGSTREAM_RE.search(output)
@@ -306,9 +352,10 @@ def discover_smf_datasets(
     Strategy (in order):
     1. D SMF,O  — active write-target dataset(s) + PARMLIB member for all configured names.
     2. D SMF,D  — all dataset statuses (ACTIVE, ALTERNATE, FULL, EMPTY).
-    3. pySEAR   — RACF dataset profiles whose names contain 'MAN'.
-    4. Sibling expansion — catalog wildcard derived from any name found above.
-    5. Catalog patterns  — explicit or default patterns when all else fails.
+    3. pySEAR   — RACF dataset profiles whose names contain MAN or SMF.
+    4. zsystem.search_parmlib — scan active parmlib concatenation for DSNAME/LOGSTREAM tokens.
+    5. Sibling expansion — catalog wildcard derived from any name found above.
+    6. Catalog patterns  — explicit or default patterns when all else fails.
 
     If ``sources_out`` is provided it is populated with a mapping of
     source label → list of dataset names that source contributed.
@@ -355,7 +402,11 @@ def discover_smf_datasets(
         sear_names = _query_sear_smf_dataset_profiles(hlq_prefixes, verbose=verbose)
         _add(sear_names, "pySEAR")
 
-        # --- Source 4: sibling expansion via catalog search ---
+        # --- Source 4: zsystem search of parmlib text ---
+        zsys_names = _query_zsystem_parmlib_search(verbose=verbose)
+        _add(zsys_names, "zsystem.search_parmlib")
+
+        # --- Source 5: sibling expansion via catalog search ---
         sibling_patterns: list[str] = []
         for name in list(seen):
             pat = _derive_sibling_pattern(name)
@@ -375,7 +426,7 @@ def discover_smf_datasets(
         if sources_out is not None:
             sources_out["D SMF,O + PARMLIB"] = sources_out.get("D SMF,O + PARMLIB", [])
 
-    # --- Source 5: catalog pattern search (fallback or explicit patterns) ---
+    # --- Source 6: catalog pattern search (fallback or explicit patterns) ---
     selected_patterns = tuple(patterns) if patterns is not None else DEFAULT_SMF_DATASET_PATTERNS
     catalog_hits: list[str] = []
     for pattern in selected_patterns:
