@@ -970,6 +970,46 @@ def _field(data: bytes, offset: int, length: int) -> str | None:
     return _decode_ebcdic_field(data[offset : offset + length]) if offset + length <= len(data) else None
 
 
+def _clean_type81_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = value.replace("\x00", " ").strip()
+    if not cleaned:
+        return None
+    printable = sum(1 for char in cleaned if char.isprintable())
+    if printable / len(cleaned) < 0.95:
+        return None
+    return " ".join(cleaned.split())
+
+
+def _is_type81_qualifier(value: str) -> bool:
+    return bool(value) and len(value) <= 8 and value[0] in _TOKEN_FIRST_CHARS and all(char in _TOKEN_FIRST_CHARS or char.isdigit() for char in value)
+
+
+def _looks_like_type81_dataset(value: str | None) -> bool:
+    cleaned = _clean_type81_text(value)
+    if not cleaned or len(cleaned) > 44 or "." not in cleaned:
+        return False
+    return all(_is_type81_qualifier(part) for part in cleaned.upper().split("."))
+
+
+def _type81_dataset_field(data: bytes, offset: int, length: int) -> str | None:
+    value = _clean_type81_text(_field(data, offset, length))
+    return value if _looks_like_type81_dataset(value) else None
+
+
+def _type81_identifier_field(data: bytes, offset: int, length: int) -> str | None:
+    value = _clean_type81_text(_field(data, offset, length))
+    if not value:
+        return None
+    normalized = value.upper()
+    if len(normalized) > length:
+        return None
+    if any(char not in _TOKEN_CHARS and char != " " for char in normalized):
+        return None
+    return value
+
+
 def _byte(data: bytes, offset: int) -> int | None:
     return data[offset] if offset < len(data) else None
 
@@ -990,11 +1030,11 @@ def _decode_type81_layout(payload: bytes, layout: dict[str, int]) -> _DecodedFie
     password_algorithm = _byte(payload, layout["password_algorithm"])
 
     context: dict[str, Any] = {
-        "racf_database": _field(payload, layout["racf_database"], 44),
-        "racf_database_volume": _field(payload, layout["racf_database_volume"], 6),
-        "racf_database_unit": _field(payload, layout["racf_database_unit"], 3),
-        "uads_dataset": _field(payload, layout["uads_dataset"], 44),
-        "uads_volume": _field(payload, layout["uads_volume"], 6),
+        "racf_database": _type81_dataset_field(payload, layout["racf_database"], 44),
+        "racf_database_volume": _type81_identifier_field(payload, layout["racf_database_volume"], 6),
+        "racf_database_unit": _type81_identifier_field(payload, layout["racf_database_unit"], 3),
+        "uads_dataset": _type81_dataset_field(payload, layout["uads_dataset"], 44),
+        "uads_volume": _type81_identifier_field(payload, layout["uads_volume"], 6),
         "options": _decode_bit_options(options, (
             "NO_VERIFY_STATISTICS", "NO_DATASET_STATISTICS", "VERIFY_PREPROCESSING_EXIT",
             "AUTH_PREPROCESSING_EXIT", "DEFINE_PREPROCESSING_EXIT", "VERIFY_POSTPROCESSING_EXIT",
@@ -1024,7 +1064,7 @@ def _decode_type81_layout(payload: bytes, layout: dict[str, int]) -> _DecodedFie
         "relocate_offset": _u16(payload, layout["relocate_offset"]),
         "relocate_count": _u16(payload, layout["relocate_count"]),
         "version_indicator": _byte(payload, layout["version_indicator"]),
-        "single_level_dataset_name": _field(payload, layout["single_level_dataset_name"], 8),
+        "single_level_dataset_name": _type81_identifier_field(payload, layout["single_level_dataset_name"], 8),
         "options4": _decode_bit_options(options4, (
             "TAPEDSN", "PROTECTALL", "PROTECTALL_WARNING", "ERASE_ON_SCRATCH",
             "ERASE_ON_SCRATCH_SECLEVEL", "ERASE_ON_SCRATCH_ALL", "ENHANCED_GENERIC_NAMING", "HAS_VRM",
@@ -1037,20 +1077,20 @@ def _decode_type81_layout(payload: bytes, layout: dict[str, int]) -> _DecodedFie
         "retention_period": _u16(payload, layout["retention_period"]),
         "erase_security_level": _byte(payload, layout["erase_security_level"]),
         "audit_security_level": _byte(payload, layout["audit_security_level"]),
-        "racf_fmid": _field(payload, layout["racf_fmid"], 4),
+        "racf_fmid": _type81_identifier_field(payload, layout["racf_fmid"], 4),
         "setropts_options": _decode_bit_options(setropts_options, (
             "SECLABELCONTROL", "CATDSNS", "MLQUIET", "MLSTABLE", "MLS", "MLACTIVE",
             "GENERICOWNER", "SECLABELAUDIT",
         )),
         "partner_lu_key_interval": _u16(payload, layout["partner_lu_key_interval"]),
-        "jes_nje_user_id": _field(payload, layout["jes_nje_user_id"], 8),
-        "jes_undefined_user_id": _field(payload, layout["jes_undefined_user_id"], 8),
+        "jes_nje_user_id": _type81_identifier_field(payload, layout["jes_nje_user_id"], 8),
+        "jes_undefined_user_id": _type81_identifier_field(payload, layout["jes_undefined_user_id"], 8),
         "setropts_extensions": _decode_bit_options(setropts_extensions, (
             "COMPATMODE", "CATDSNS_FAILURES", "MLS_FAILURES", "MLACTIVE_FAILURES", "APPLAUDIT",
             "INSTALLATION_RVARY_SWITCH_PASSWORD", "INSTALLATION_RVARY_STATUS_PASSWORD", "ENHANCEDGENERICOWNER",
         )),
-        "primary_language": _field(payload, layout["primary_language"], 3),
-        "secondary_language": _field(payload, layout["secondary_language"], 3),
+        "primary_language": _type81_identifier_field(payload, layout["primary_language"], 3),
+        "secondary_language": _type81_identifier_field(payload, layout["secondary_language"], 3),
         "kerb_segment_level": _byte(payload, layout["kerb_level"]),
         "password_minimum_days": _byte(payload, layout["password_minimum_days"]),
         "options6": _decode_bit_options(options6, (
@@ -1059,8 +1099,8 @@ def _decode_type81_layout(payload: bytes, layout: dict[str, int]) -> _DecodedFie
         )),
         "mls_options2": _decode_bit_options(mls_options2, ("MLFSOBJ", "MLIPCOBJ", "MLNAMES", "SECLBYSYSTEM", "RESERVED_4", "RESERVED_5", "RESERVED_6", "RESERVED_7")),
         "password_algorithm": None if password_algorithm is None else {0: "LEGACY", 1: "KDFAES"}.get(password_algorithm, f"UNKNOWN({password_algorithm})"),
-        "vmxevent_control_profile": _field(payload, layout["vmxevent_control_profile"], 8),
-        "vmxevent_audit_profile": _field(payload, layout["vmxevent_audit_profile"], 8),
+        "vmxevent_control_profile": _type81_identifier_field(payload, layout["vmxevent_control_profile"], 8),
+        "vmxevent_audit_profile": _type81_identifier_field(payload, layout["vmxevent_audit_profile"], 8),
         "password_phrase_interval": _u16(payload, layout["password_phrase_interval"]),
     }
     return {
@@ -1082,15 +1122,36 @@ def _score_type81_layout(fields: _DecodedFieldPatch) -> int:
         score += 2
     if fields.get("timestamp"):
         score += 2
-    for name in ("racf_database", "uads_dataset", "racf_fmid"):
-        if context.get(name):
-            score += 2
+    if context.get("racf_database"):
+        score += 5
+    if context.get("uads_dataset"):
+        score += 3
+    if context.get("racf_fmid"):
+        score += 2
+    if context.get("racf_database_volume"):
+        score += 1
     return score
+
+
+def _minimal_type81_fields(payload: bytes) -> _DecodedFieldPatch:
+    return {
+        "subtype": None,
+        "system_id": _decode_system_id(payload[13:17]) if len(payload) >= 17 else None,
+        "timestamp": _decode_smf_timestamp(payload),
+        "product_name": "RACF",
+        "action_hint": "RACF_INITIALIZATION",
+        "initialization_context": None,
+        "resource_candidates": (),
+        "text_tokens": (),
+    }
 
 
 def _decode_type81_fields(payload: bytes) -> _DecodedFieldPatch:
     decoded_layouts = [_decode_type81_layout(payload, layout) for layout in _TYPE81_LAYOUTS]
-    return max(decoded_layouts, key=_score_type81_layout)
+    selected = max(decoded_layouts, key=_score_type81_layout)
+    if _score_type81_layout(selected) < 7:
+        return _minimal_type81_fields(payload)
+    return selected
 
 
 def _record_type_from_payload(payload: bytes, fallback: int) -> int:
