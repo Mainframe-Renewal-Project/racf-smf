@@ -35,6 +35,7 @@ def iter_security_events(
     *,
     record_format: RecordFormat = "auto",
     strict_man: bool = False,
+    dataset_input: bool = False,
     include_all: bool = False,
     zos_unix_subtypes: set[int] | None = None,
 ) -> Iterator[dict[str, Any]]:
@@ -45,6 +46,7 @@ def iter_security_events(
         path,
         record_format=record_format,
         strict_man=strict_man,
+        dataset_input=dataset_input,
         include_all=include_all,
         zos_unix_subtypes=zos_unix_subtypes,
     ):
@@ -56,6 +58,7 @@ def read_security_events(
     *,
     record_format: RecordFormat = "auto",
     strict_man: bool = False,
+    dataset_input: bool = False,
     include_all: bool = False,
     zos_unix_subtypes: set[int] | None = None,
 ) -> list[dict[str, Any]]:
@@ -66,6 +69,7 @@ def read_security_events(
             path,
             record_format=record_format,
             strict_man=strict_man,
+            dataset_input=dataset_input,
             include_all=include_all,
             zos_unix_subtypes=zos_unix_subtypes,
         )
@@ -92,6 +96,7 @@ def read_security_dataframe(
     *,
     record_format: RecordFormat = "auto",
     strict_man: bool = False,
+    dataset_input: bool = False,
     include_all: bool = False,
     zos_unix_subtypes: set[int] | None = None,
 ):
@@ -102,6 +107,7 @@ def read_security_dataframe(
             path,
             record_format=record_format,
             strict_man=strict_man,
+            dataset_input=dataset_input,
             include_all=include_all,
             zos_unix_subtypes=zos_unix_subtypes,
         )

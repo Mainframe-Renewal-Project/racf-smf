@@ -297,8 +297,9 @@ def iter_smf_records(
     record_format: RecordFormat = "auto",
     *,
     strict_man: bool = False,
+    dataset_input: bool = False,
 ) -> Iterator[SmfRecord]:
-    dataset_name = _dataset_name_from_source(path)
+    dataset_name = str(path).strip() if dataset_input else _dataset_name_from_source(path)
     if dataset_name is not None:
         if strict_man and record_format in ("man", "auto"):
             raise ValueError(
@@ -335,6 +336,7 @@ def iter_security_records(
     *,
     record_format: RecordFormat = "auto",
     strict_man: bool = False,
+    dataset_input: bool = False,
     include_all: bool = False,
     zos_unix_subtypes: set[int] | None = None,
 ) -> Iterator[SmfRecord]:
@@ -347,7 +349,12 @@ def iter_security_records(
     """
 
     unix_subtypes = zos_unix_subtypes or {2, 3, 4}
-    for record in iter_smf_records(path, record_format=record_format, strict_man=strict_man):
+    for record in iter_smf_records(
+        path,
+        record_format=record_format,
+        strict_man=strict_man,
+        dataset_input=dataset_input,
+    ):
         record.tags = _classify(record.record_type, record.subtype, unix_subtypes)
         if include_all or record.tags:
             yield record

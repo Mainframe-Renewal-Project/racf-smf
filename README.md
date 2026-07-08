@@ -67,13 +67,13 @@ racf-smf path\to\SYS1.MAN01.bin --format man --json-out security_records.jsonl
 Read directly from an MVS dataset using ZOAU (USS on z/OS):
 
 ```sh
-racf-smf mvs://SYS1.MANX --json-out /u/you/security_records.jsonl
+racf-smf SYS1.MANX --dataset-input --json-out /u/you/security_records.jsonl
 ```
 
-Read a specific generation or quoted dataset name:
+Read a specific generation dataset:
 
 ```sh
-racf-smf "mvs://HLQ.SMF.DAILY.G0001V00" --json-out /u/you/security_records.jsonl
+racf-smf HLQ.SMF.DAILY.G0001V00 --dataset-input --json-out /u/you/security_records.jsonl
 ```
 
 Validate MAN extract integrity while parsing (fail fast on malformed BDW/RDW segments):
@@ -138,6 +138,15 @@ print(df.groupby(["event_family", "record_type"]).size())
 ```
 
 If pySEAR expects iterable rows/dicts, `iter_security_events(...)` can be passed directly into your ingest function.
+
+For dataset input in Python APIs, set `dataset_input=True`:
+
+```python
+from racf_smf import iter_security_events
+
+for event in iter_security_events("SYS1.MANX", dataset_input=True):
+  process(event)
+```
 
 ## Notes and assumptions
 

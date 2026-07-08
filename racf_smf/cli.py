@@ -33,7 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "input",
-        help="Path to SMF binary data, or z/OS dataset via mvs://HLQ.DATA.SET",
+        help="Path to SMF binary data or plain z/OS dataset name when --dataset-input is set",
+    )
+    parser.add_argument(
+        "--dataset-input",
+        action="store_true",
+        help="Treat input as a z/OS dataset name (for example SYS1.MAN01)",
     )
     parser.add_argument(
         "--format",
@@ -73,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
-    if not _is_dataset_source(args.input):
+    if not args.dataset_input and not _is_dataset_source(args.input):
         input_path = Path(args.input)
         if not input_path.exists():
             raise SystemExit(f"Input file not found: {args.input}")
@@ -93,6 +98,7 @@ def main() -> int:
             args.input,
             record_format=record_format,
             strict_man=args.strict_man,
+            dataset_input=args.dataset_input,
             include_all=args.all,
             zos_unix_subtypes=subtypes,
         ):
