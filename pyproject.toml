@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "racf-smf"
+version = "0.1.0"
+description = "Fetch and filter RACF and z/OS UNIX security SMF records"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Mainframe Renewal Project" }
+]
+
+[project.scripts]
+racf-smf = "racf_smf.cli:main"
+
+[project.optional-dependencies]
+analytics = [
+  "pandas>=2.2",
+]
