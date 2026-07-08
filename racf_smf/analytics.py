@@ -18,6 +18,17 @@ DEFAULT_SMF_DATASET_PATTERNS: tuple[str, ...] = (
 _DSNAME_BLOCK_RE = _re.compile(r"DSNAME\s*\(([^)]+)\)", _re.DOTALL | _re.IGNORECASE)
 # Matches LOGSTREAM(...) entries in SMFPRMxx or D SMF,O output.
 _LOGSTREAM_RE = _re.compile(r"LOGSTREAM\s*\(\s*([^)]+)\)", _re.DOTALL | _re.IGNORECASE)
+# Validates a syntactically legal MVS dataset name (each qualifier starts with a letter
+# or national character; digits-only tokens like block addresses are rejected).
+_VALID_DSN_RE = _re.compile(
+    r"^[A-Z#@$][A-Z0-9#@$]{0,7}(\.[A-Z#@$][A-Z0-9#@$]{0,7})*$",
+    _re.IGNORECASE,
+)
+
+
+def _is_valid_dsn(name: str) -> bool:
+    """Return True only for syntactically valid MVS dataset names (≤ 44 chars)."""
+    return bool(name) and len(name) <= 44 and bool(_VALID_DSN_RE.match(name))
 
 
 def _derive_sibling_pattern(dataset_name: str) -> str | None:
@@ -148,7 +159,8 @@ def _parse_dsnames_from_output(output: str | None) -> list[str]:
     if not match:
         return []
     raw = match.group(1)
-    return [n.strip() for n in raw.replace("\n", ",").split(",") if n.strip()]
+    candidates = [n.strip() for n in raw.replace("\n", ",").split(",") if n.strip()]
+    return [n for n in candidates if _is_valid_dsn(n)]
 
 
 def _coerce_text_output(value: Any) -> str | None:

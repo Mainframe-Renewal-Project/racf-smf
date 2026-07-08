@@ -348,6 +348,9 @@ def iter_smf_records(
             errno_val = getattr(exc, "errno", None)
             if "EDC5092I" in message or errno_val == 92:
                 return
+            if "EDC5047I" in message or errno_val == 47:
+                # Invalid dataset name (e.g. a non-name token passed from discovery).
+                return
             if errno_val != 12 and "EDC5012I" not in message:
                 raise
             data = _read_dataset_stream_via_copy(dataset_name)
