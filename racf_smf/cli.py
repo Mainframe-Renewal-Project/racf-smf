@@ -290,13 +290,13 @@ def main() -> int:
 
         preferred_order = [
             "zsystem.search_parmlib",
+            "zsystem.list_parmlib",
             "pySEAR",
             "D SMF,O + PARMLIB",
             "D SMF,D",
             "D PARMLIB (full concat)",
             "D IPLINFO",
             "D LOGGER",
-            "zsystem.list_parmlib",
             "Sibling expansion",
         ]
 

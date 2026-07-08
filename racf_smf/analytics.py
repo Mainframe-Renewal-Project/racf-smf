@@ -766,12 +766,12 @@ def discover_smf_datasets(
 
     Strategy (in order):
     1.  zsystem.search_parmlib - scan active parmlib concatenation for DSNAME/LOGSTREAM tokens.
-    2.  pySEAR   - RACF dataset profiles whose names contain MAN or SMF.
-    3.  D SMF,O  - active write-target dataset(s) + PARMLIB member for all configured names.
-    4.  D SMF,D  - all dataset statuses (ACTIVE, ALTERNATE, FULL, EMPTY).
-    5.  D PARMLIB — read active SMFPRMxx from every PARMLIB dataset in the concatenation.
-    6.  D IPLINFO - locate SMFPRM suffix via IEASYSxx when D SMF,O does not report it.
-    7.  zsystem.list_parmlib — enumerate all SMFPRM* members across the concatenation.
+    2.  zsystem.list_parmlib — enumerate all SMFPRM* members across the concatenation.
+    3.  pySEAR   - RACF dataset profiles whose names contain MAN or SMF.
+    4.  D SMF,O  - active write-target dataset(s) + PARMLIB member for all configured names.
+    5.  D SMF,D  - all dataset statuses (ACTIVE, ALTERNATE, FULL, EMPTY).
+    6.  D PARMLIB — read active SMFPRMxx from every PARMLIB dataset in the concatenation.
+    7.  D IPLINFO - locate SMFPRM suffix via IEASYSxx when D SMF,O does not report it.
     8.  D LOGGER  — discover SMF logstreams for sites using logstream-based SMF recording.
     9.  Sibling expansion — catalog wildcard derived from any name found above.
     10. Catalog patterns  — explicit or default patterns when all else fails.
@@ -819,7 +819,11 @@ def discover_smf_datasets(
         zsys_names = _query_zsystem_parmlib_search(verbose=verbose)
         _add(zsys_names, "zsystem.search_parmlib")
 
-        # --- Source 2: pySEAR RACF profile search ---
+        # --- Source 2: zsystem.list_parmlib SMFPRM* members ---
+        zlist_names = _query_zsystem_all_smfprm_members(_sysname, verbose=verbose)
+        _add(zlist_names, "zsystem.list_parmlib")
+
+        # --- Source 3: pySEAR RACF profile search ---
         # Derive HLQ prefixes from datasets already found so SEAR's prefix
         # filter targets the right part of the catalog.
         hlq_prefixes = list({n.split(".")[0] for n in seen if "." in n})
@@ -829,25 +833,21 @@ def discover_smf_datasets(
         if sources_out is not None and _SEAR_SENTINEL in sear_names:
             sources_out["pySEAR"] = []
 
-        # --- Source 3: D SMF,O + active PARMLIB member ---
+        # --- Source 4: D SMF,O + active PARMLIB member ---
         live = _query_active_smf_datasets(verbose=verbose)
         _add(live, "D SMF,O + PARMLIB")
 
-        # --- Source 4: D SMF,D ---
+        # --- Source 5: D SMF,D ---
         smfd = _query_smf_d_datasets(verbose=verbose)
         _add(smfd, "D SMF,D")
 
-        # --- Source 5: full PARMLIB concatenation SMFPRMxx search ---
+        # --- Source 6: full PARMLIB concatenation SMFPRMxx search ---
         parmlib_names = _query_full_parmlib_smfprm(_sysname, verbose=verbose)
         _add(parmlib_names, "D PARMLIB (full concat)")
 
-        # --- Source 6: D IPLINFO -> SMFPRM suffix via IEASYSxx ---
+        # --- Source 7: D IPLINFO -> SMFPRM suffix via IEASYSxx ---
         iplinfo_names = _query_iplinfo_smfprm(_sysname, verbose=verbose)
         _add(iplinfo_names, "D IPLINFO")
-
-        # --- Source 7: zsystem.list_parmlib SMFPRM* members ---
-        zlist_names = _query_zsystem_all_smfprm_members(_sysname, verbose=verbose)
-        _add(zlist_names, "zsystem.list_parmlib")
 
         # --- Source 8: D LOGGER SMF logstreams ---
         logstream_names = _query_smf_logstreams(verbose=verbose)
