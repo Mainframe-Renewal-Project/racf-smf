@@ -910,6 +910,127 @@ def _record_offset_candidates(offset: int) -> tuple[int, ...]:
     return (offset, offset - 4) if offset >= 4 else (offset,)
 
 
+_TYPE92_SUBTYPE_NAMES = {
+    1: "ZOS_UNIX_FILE_SYSTEM_MOUNT",
+    2: "ZOS_UNIX_FILE_SYSTEM_QUIESCE",
+    4: "ZOS_UNIX_FILE_SYSTEM_UNQUIESCE",
+    5: "ZOS_UNIX_FILE_SYSTEM_UNMOUNT",
+    6: "ZOS_UNIX_FILE_SYSTEM_REMOUNT",
+    7: "ZOS_UNIX_FILE_SYSTEM_MOVE",
+    8: "ZOS_UNIX_FILE_SYSTEM_MIGRATION",
+    10: "ZOS_UNIX_FILE_OPEN",
+    11: "ZOS_UNIX_FILE_CLOSE",
+    12: "ZOS_UNIX_MMAP",
+    13: "ZOS_UNIX_MUNMAP",
+    14: "ZOS_UNIX_FILE_DELETE_OR_RENAME",
+    15: "ZOS_UNIX_SECURITY_ATTRIBUTE_CHANGE",
+    16: "ZOS_UNIX_SPECIAL_FILE_CLOSE",
+    17: "ZOS_UNIX_FILE_ACCESS_COUNT",
+    50: "ZOS_UNIX_FILE_SYSTEM_EVENTS",
+    51: "ZFS_COUNTS_AND_RESPONSE_TIMES",
+    52: "ZFS_USER_FILE_CACHE_STATISTICS",
+    53: "ZFS_METADATA_CACHE_STATISTICS",
+    54: "ZFS_LOCKING_AND_SLEEP_STATISTICS",
+    55: "ZFS_GENERAL_IO_STATISTICS",
+    56: "ZFS_TOKEN_MANAGER_INFORMATION",
+    57: "ZFS_MEMORY_USAGE",
+    58: "ZFS_TRANSMIT_AND_RECEIVE_STATISTICS",
+    59: "ZFS_PER_FILE_SYSTEM_USAGE",
+}
+
+
+def _type92_layout_candidates(payload: bytes) -> tuple[dict[str, int], ...]:
+    return (
+        {"adjust": 0, "record_type": 5, "time": 6, "date": 10, "system": 14, "subsystem": 18, "subtype": 22, "sdl": 26, "triplets": 28},
+        {"adjust": -4, "record_type": 1, "time": 2, "date": 6, "system": 10, "subsystem": 14, "subtype": 18, "sdl": 22, "triplets": 24},
+    )
+
+
+def _self_defining_triplet(payload: bytes, start: int) -> tuple[int | None, int | None, int | None]:
+    return _u32(payload, start), _u16(payload, start + 4), _u16(payload, start + 6)
+
+
+def _section_start(payload: bytes, record_offset: int | None, adjust: int) -> int | None:
+    if record_offset is None:
+        return None
+    for candidate in (record_offset + adjust, record_offset):
+        if 0 <= candidate < len(payload):
+            return candidate
+    return None
+
+
+def _looks_like_type92_layout(payload: bytes, layout: dict[str, int]) -> bool:
+    if layout["record_type"] >= len(payload) or payload[layout["record_type"]] != 92:
+        return False
+    if layout["triplets"] + 24 > len(payload):
+        return False
+    sdl = _u16(payload, layout["sdl"])
+    if sdl is None or sdl < 24 or sdl > 256:
+        return False
+    for triplet_start in (layout["triplets"], layout["triplets"] + 8, layout["triplets"] + 16):
+        section_offset, section_length, section_count = _self_defining_triplet(payload, triplet_start)
+        if section_offset is None or section_length is None or section_count is None:
+            return False
+        if section_count and section_length == 0:
+            return False
+        section_start = _section_start(payload, section_offset, layout["adjust"])
+        if section_count and (section_start is None or section_start + section_length > len(payload)):
+            return False
+    return True
+
+
+def _find_type92_layout(payload: bytes) -> dict[str, int] | None:
+    for layout in _type92_layout_candidates(payload):
+        if _looks_like_type92_layout(payload, layout):
+            return layout
+    return None
+
+
+def _decode_type92_fields(payload: bytes) -> _DecodedFieldPatch:
+    layout = _find_type92_layout(payload)
+    if layout is None:
+        return {}
+
+    subsystem_offset, subsystem_length, subsystem_count = _self_defining_triplet(payload, layout["triplets"])
+    identity_offset, identity_length, identity_count = _self_defining_triplet(payload, layout["triplets"] + 8)
+    data_offset, data_length, data_count = _self_defining_triplet(payload, layout["triplets"] + 16)
+
+    subsystem_start = _section_start(payload, subsystem_offset, layout["adjust"])
+    identity_start = _section_start(payload, identity_offset, layout["adjust"])
+
+    subtype = _u16(payload, layout["subtype"])
+    product_name: str | None = None
+    product_version: str | None = None
+    if subsystem_start is not None and subsystem_count and subsystem_length and subsystem_length >= 20:
+        product_name = _decode_ebcdic_field(payload[subsystem_start + 4 : subsystem_start + 12])
+        product_version = _decode_ebcdic_field(payload[subsystem_start + 12 : subsystem_start + 20])
+
+    job_name: str | None = None
+    group_name: str | None = None
+    user_id: str | None = None
+    if identity_start is not None and identity_count and identity_length and identity_length >= 40:
+        job_name = _decode_fixed_identifier(payload[identity_start : identity_start + 8])
+        group_name = _decode_fixed_identifier(payload[identity_start + 24 : identity_start + 32])
+        user_id = _decode_fixed_identifier(payload[identity_start + 32 : identity_start + 40])
+
+    action_hint = _TYPE92_SUBTYPE_NAMES.get(subtype, f"ZOS_UNIX_TYPE92_SUBTYPE_{subtype}" if subtype is not None else "ZOS_UNIX_TYPE92")
+    text_tokens = _unique_preserve_order([value for value in (product_name, product_version, action_hint) if value])
+
+    return {
+        "subtype": subtype,
+        "system_id": _decode_system_id(payload[layout["system"] : layout["system"] + 4]) if layout["system"] + 4 <= len(payload) else None,
+        "timestamp": _decode_smf_timestamp(payload, time_offset=layout["time"], date_offset=layout["date"]),
+        "user_id": user_id,
+        "group_name": group_name,
+        "job_name": job_name,
+        "product_name": product_name or "ZOS_UNIX",
+        "product_version": product_version,
+        "action_hint": action_hint,
+        "user_id_candidates": _unique_preserve_order([user_id] if user_id else []),
+        "text_tokens": text_tokens,
+    }
+
+
 def _find_extended_1154_header(payload: bytes) -> dict[str, int] | None:
     for adjust in (0, -4):
         rty_offset = 5 + adjust
