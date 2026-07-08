@@ -122,18 +122,24 @@ def _extract_fields(payload: bytes) -> tuple[int, int | None, str | None]:
     """
     Extract common fields from an SMF payload.
 
-    Assumptions follow standard SMF common header conventions:
-    - byte 2: record type (SMFRTY)
-    - bytes 12-15: system identifier
-    - bytes 18-19: subtype (for subtype-capable records)
+    Standard SMF common header layout (all formats, payload includes SMFLEN):
+      0-1  SMFLEN  record length
+      2    SMFSEG  segment descriptor (0 for non-spanned)
+      3    SMFFLG  system indicator flags
+      4    SMFRTY  record type
+      5-8  SMFTIME time
+      9-12 SMFDATE date
+      13-16 SMFSID system identifier (4 EBCDIC chars)
+      17-20 SMFSSID subsystem identifier (4 EBCDIC chars)
+      21-22 SMFSUBT subtype (2 bytes, for records that carry one)
     """
 
-    if len(payload) < 3:
+    if len(payload) < 5:
         raise ValueError("Record payload too short to determine record type")
 
-    record_type = payload[2]
-    system_id = _decode_system_id(payload[12:16]) if len(payload) >= 16 else None
-    subtype = struct.unpack(">H", payload[18:20])[0] if len(payload) >= 20 else None
+    record_type = payload[4]
+    system_id = _decode_system_id(payload[13:17]) if len(payload) >= 17 else None
+    subtype = struct.unpack(">H", payload[21:23])[0] if len(payload) >= 23 else None
     return record_type, subtype, system_id
 
 
