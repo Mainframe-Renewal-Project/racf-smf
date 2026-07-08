@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 import os
 from pathlib import Path
 from typing import Any
 
 from .parser import RecordFormat, SmfRecord, iter_security_records
+
+
+_SEAR_SENTINEL = "__sear_available__"
 
 
 DEFAULT_SMF_DATASET_PATTERNS: tuple[str, ...] = (
@@ -196,6 +199,24 @@ def _opercmd_output(command: str, verbose: bool = False) -> str | None:
         return None
 
 
+def _import_sear_function() -> tuple[Callable[[dict[str, Any]], Any] | None, str | None, bool]:
+    """Return (sear_callable, error_message, module_found)."""
+    for module_name in ("sear", "pysear"):
+        try:
+            module = __import__(module_name, fromlist=["sear"])
+        except ModuleNotFoundError:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            return None, str(exc), True
+
+        sear_func = getattr(module, "sear", None)
+        if callable(sear_func):
+            return sear_func, None, True
+        return None, f"{module_name}.sear is not callable", True
+
+    return None, None, False
+
+
 def _sear_import_status() -> tuple[bool, str | None]:
     """
     Return (available, error_message).
@@ -206,16 +227,10 @@ def _sear_import_status() -> tuple[bool, str | None]:
                        native libsear.so could not be loaded due to missing
                        Language Environment PTFs or RACF authorizations).
     """
-    for module_name in ("sear", "pysear"):
-        try:
-            import importlib
-            importlib.import_module(module_name)
-            return True, None
-        except ModuleNotFoundError:
-            continue          # module genuinely absent — try next name
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)  # installed but broken
-    return False, None
+    sear_func, error, found = _import_sear_function()
+    if sear_func is not None:
+        return True, None
+    return False, error if found else None
 
 
 def _sear_available() -> bool:
@@ -236,20 +251,14 @@ def _query_sear_smf_dataset_profiles(
     client-side for profiles whose last qualifier starts with 'MAN'.
 
     Silently returns an empty list when sear is not installed.
-    Returns ["__sear_available__"] when installed but no matching profiles found,
+    Returns [_SEAR_SENTINEL] when installed but no matching profiles found,
     so the caller can distinguish "not installed" from "installed, no results".
     """
-    try:
-        from sear import sear  # type: ignore[import-not-found]
-    except ModuleNotFoundError:
-        try:
-            from pysear import sear  # type: ignore[import-not-found]
-        except ModuleNotFoundError:
-            return []
-        except Exception:
-            return []  # installed but native library unavailable
-    except Exception:
-        return []  # installed but native library unavailable
+    sear, import_error, found = _import_sear_function()
+    if sear is None:
+        if verbose and import_error:
+            print(f"  pySEAR import failed: {import_error}", flush=True)
+        return []
 
     candidates: list[str] = []
     seen_profiles: set[str] = set()
@@ -278,7 +287,7 @@ def _query_sear_smf_dataset_profiles(
     if verbose:
         print(f"  SEAR searched {len(known_prefixes or [''])} prefix(es), found {len(candidates)} MAN profile(s)", flush=True)
 
-    return candidates if candidates else []
+    return candidates if candidates else ([_SEAR_SENTINEL] if found else [])
 
 
 def _parse_dsnames_from_output(output: str | None) -> list[str]:
@@ -736,6 +745,14 @@ def _list_dataset_names(datasets_module, pattern: str, *, include_migrated: bool
         return datasets_module.list_dataset_names(pattern) or []
 
 
+def _import_zoau_datasets():
+    try:
+        from zoautil_py import datasets  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    return datasets
+
+
 def discover_smf_datasets(
     patterns: Iterable[str] | None = None,
     *,
@@ -763,12 +780,7 @@ def discover_smf_datasets(
     source label -> list of dataset names that source contributed.
     """
 
-    try:
-        from zoautil_py import datasets  # type: ignore[import-not-found]
-    except ImportError as exc:  # pragma: no cover - depends on z/OS runtime
-        raise RuntimeError(
-            "ZOAU is required for automatic dataset discovery. Install zoautil_py first."
-        ) from exc
+    datasets = _import_zoau_datasets()
 
     if sources_out is not None:
         sources_out.clear()
@@ -812,7 +824,10 @@ def discover_smf_datasets(
         # filter targets the right part of the catalog.
         hlq_prefixes = list({n.split(".")[0] for n in seen if "." in n})
         sear_names = _query_sear_smf_dataset_profiles(hlq_prefixes, verbose=verbose)
-        _add(sear_names, "pySEAR")
+        sear_hits = [name for name in sear_names if name != _SEAR_SENTINEL]
+        _add(sear_hits, "pySEAR")
+        if sources_out is not None and _SEAR_SENTINEL in sear_names:
+            sources_out["pySEAR"] = []
 
         # --- Source 3: D SMF,O + active PARMLIB member ---
         live = _query_active_smf_datasets(verbose=verbose)
@@ -848,10 +863,11 @@ def discover_smf_datasets(
                     sibling_patterns.append(pat)
 
         siblings: list[str] = []
-        for pat in sibling_patterns:
-            for name in _list_dataset_names(datasets, pat, include_migrated=include_migrated):
-                if name not in seen and _has_man_or_smf_qualifier(name):
-                    siblings.append(name)
+        if datasets is not None:
+            for pat in sibling_patterns:
+                for name in _list_dataset_names(datasets, pat, include_migrated=include_migrated):
+                    if name not in seen and _has_man_or_smf_qualifier(name):
+                        siblings.append(name)
         _add(siblings, "Sibling expansion")
 
         if discovered:
@@ -861,6 +877,14 @@ def discover_smf_datasets(
             sources_out["D SMF,O + PARMLIB"] = sources_out.get("D SMF,O + PARMLIB", [])
 
     # --- Source 10: catalog pattern search (fallback or explicit patterns) ---
+    if datasets is None:
+        if discovered:
+            return discovered
+        raise RuntimeError(
+            "ZOAU datasets support is required for catalog pattern discovery. Install zoautil_py "
+            "or use pySEAR/zsystem discovery on z/OS."
+        )
+
     selected_patterns = tuple(patterns) if patterns is not None else DEFAULT_SMF_DATASET_PATTERNS
     catalog_hits: list[str] = []
     for pattern in selected_patterns:
