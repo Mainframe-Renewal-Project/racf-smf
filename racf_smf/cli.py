@@ -160,6 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Dataset name pattern to use during discovery, for example HLQ.*.MAN*, "
             "HLQ.SMF*.DATASET, or HLQ.SMF*.*.**. "
+            "Recursive ** suffixes are expanded into portable catalog probes. "
             "This option is repeatable. Supplying one or more patterns bypasses live-source discovery "
             "and uses the provided catalog search patterns instead."
         ),

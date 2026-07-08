@@ -19,6 +19,8 @@ DEFAULT_SMF_DATASET_PATTERNS: tuple[str, ...] = (
     "*.SMF*.*.**",
 )
 
+_CATALOG_RECURSIVE_WILDCARD_DEPTH = 8
+
 _DSN_FIRST_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ#@$")
 _DSN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@$")
 _DSN_TOKEN_CHARS = _DSN_CHARS | frozenset(".")
@@ -752,6 +754,35 @@ def _list_dataset_names(datasets_module, pattern: str, *, include_migrated: bool
         return []
 
 
+def _catalog_pattern_variants(pattern: str) -> tuple[str, ...]:
+    """Return portable catalog probes for patterns that use recursive ** suffixes."""
+    normalized = pattern.strip().upper()
+    if not normalized:
+        return ()
+
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    def _add(candidate: str) -> None:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            variants.append(candidate)
+
+    if normalized.endswith(".**"):
+        base = normalized[:-3]
+        _add(base)
+        for depth in range(1, _CATALOG_RECURSIVE_WILDCARD_DEPTH + 1):
+            _add(base + (".*" * depth))
+        _add(normalized)
+    elif "**" in normalized:
+        _add(normalized.replace("**", "*"))
+        _add(normalized)
+    else:
+        _add(normalized)
+
+    return tuple(variants)
+
+
 def _import_zoau_datasets():
     try:
         from zoautil_py import datasets  # type: ignore[import-not-found]
@@ -895,9 +926,10 @@ def discover_smf_datasets(
     selected_patterns = tuple(patterns) if patterns is not None else DEFAULT_SMF_DATASET_PATTERNS
     catalog_hits: list[str] = []
     for pattern in selected_patterns:
-        catalog_hits.extend(
-            _list_dataset_names(datasets, pattern, include_migrated=include_migrated)
-        )
+        for catalog_pattern in _catalog_pattern_variants(pattern):
+            catalog_hits.extend(
+                _list_dataset_names(datasets, catalog_pattern, include_migrated=include_migrated)
+            )
     _add(catalog_hits, f"Catalog patterns ({', '.join(selected_patterns)})")
 
     return discovered

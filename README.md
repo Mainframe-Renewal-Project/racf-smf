@@ -237,6 +237,11 @@ events = read_discovered_security_events(
 )
 ```
 
+Patterns ending in `**` are expanded into portable catalog probes with ordinary
+single-qualifier `*` wildcards, so `HLQ.SMF*.*.**` also tries forms such as
+`HLQ.SMF*.*.*` and `HLQ.SMF*.*.*.*` for ZOAU levels that do not support
+recursive catalog wildcards directly.
+
 ## Notes and assumptions
 
 - The parser extracts common SMF header fields using standard offsets:
