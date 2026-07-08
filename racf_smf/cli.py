@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 
 from .analytics import discover_smf_datasets, iter_discovered_security_events, iter_security_events
-from .parser import RecordFormat, iter_smf_records
+from .parser import RecordFormat
 
 
 # ---------------------------------------------------------------------------
@@ -236,22 +236,28 @@ def main() -> int:
         if out_handle:
             out_handle.close()
 
-    print(f"Records scanned: {scanned}, emitted: {emitted}")
+    print(f"Records scanned: {_bold(str(scanned))}, emitted: {_bold(str(emitted))}", file=sys.stderr)
     if scanned and not emitted:
         top_types = ", ".join(
             f"type {t}:{n}" for t, n in scanned_types.most_common(5)
         )
-        print(f"  No security records (type 80/83) found in scanned data.")
-        print(f"  Top record types seen: {top_types}")
-        print(f"  Tip: run with --all to emit all {scanned} records and inspect types.")
+        _warn("  No security records (type 80/83) found in scanned data.")
+        _warn(f"  Top record types seen: {top_types}")
+        _warn(f"  Tip: run with --all to emit all {scanned} records and inspect types.")
     if not scanned:
-        print("  No records could be read. Check --format (try --format man or --format rdw).")
+        _err("  No records could be read. Check --format (try --format man or --format rdw).")
     if type_counter:
-        summary = ", ".join(f"{record_type}:{count}" for record_type, count in sorted(type_counter.items()))
-        print(f"By record type: {summary}")
+        summary = ", ".join(
+            f"{_colored(str(rt), _C.CYAN)}:{_bold(str(n))}"
+            for rt, n in sorted(type_counter.items())
+        )
+        print(f"By record type: {summary}", file=sys.stderr)
     if tag_counter:
-        summary = ", ".join(f"{tag}:{count}" for tag, count in sorted(tag_counter.items()))
-        print(f"By tag: {summary}")
+        summary = ", ".join(
+            f"{_colored(tag, _C.GREEN)}:{_bold(str(n))}"
+            for tag, n in sorted(tag_counter.items())
+        )
+        print(f"By tag: {summary}", file=sys.stderr)
 
     return 0
 
