@@ -289,14 +289,14 @@ def main() -> int:
         print(_bold("Discovery sources:"), file=sys.stderr)
 
         preferred_order = [
+            "zsystem.search_parmlib",
+            "pySEAR",
             "D SMF,O + PARMLIB",
             "D SMF,D",
             "D PARMLIB (full concat)",
             "D IPLINFO",
             "D LOGGER",
-            "zsystem.search_parmlib",
             "zsystem.list_parmlib",
-            "pySEAR",
             "Sibling expansion",
         ]
 
