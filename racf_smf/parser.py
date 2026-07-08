@@ -286,6 +286,16 @@ def _decode_ebcdic_text(raw: bytes) -> str:
     return raw.decode("latin-1", errors="ignore")
 
 
+_FIXED_IDENTIFIER_RE = re.compile(r"[A-Z0-9#@$._/-]{1,8}")
+
+
+def _decode_fixed_identifier(raw: bytes) -> str | None:
+    text = (_decode_ebcdic_field(raw) or "").replace("\x00", "").strip().upper()
+    if not text or not _FIXED_IDENTIFIER_RE.fullmatch(text):
+        return None
+    return text
+
+
 def _packed_decimal_digits(raw: bytes) -> str | None:
     if len(raw) != 4:
         return None
@@ -299,12 +309,12 @@ def _packed_decimal_digits(raw: bytes) -> str | None:
     return digits if digits.isdigit() else None
 
 
-def _decode_smf_timestamp(payload: bytes) -> str | None:
-    if len(payload) < 13:
+def _decode_smf_timestamp(payload: bytes, *, time_offset: int = 5, date_offset: int = 9) -> str | None:
+    if len(payload) < max(time_offset + 4, date_offset + 4):
         return None
 
-    hundredths = struct.unpack(">I", payload[5:9])[0]
-    date_digits = _packed_decimal_digits(payload[9:13])
+    hundredths = struct.unpack(">I", payload[time_offset : time_offset + 4])[0]
+    date_digits = _packed_decimal_digits(payload[date_offset : date_offset + 4])
     if date_digits is None or len(date_digits) != 7:
         return None
 
@@ -379,14 +389,52 @@ def _u32(data: bytes, offset: int) -> int | None:
     return struct.unpack(">I", data[offset : offset + 4])[0]
 
 
-def _decode_type80_fields(payload: bytes) -> _DecodedFieldPatch:
-    event_code = payload[19] if len(payload) >= 20 else None
-    event_qualifier = payload[20] if len(payload) >= 21 else None
-    user_id = _decode_ebcdic_field(payload[21:29]) if len(payload) >= 29 else None
-    group_name = _decode_ebcdic_field(payload[29:37]) if len(payload) >= 37 else None
-    terminal_id = _decode_ebcdic_field(payload[45:53]) if len(payload) >= 53 else None
-    job_name = _decode_ebcdic_field(payload[53:61]) if len(payload) >= 61 else None
-    smf_user_id = _decode_ebcdic_field(payload[69:77]) if len(payload) >= 77 else None
+_TYPE80_LAYOUTS = (
+    {
+        "system": 13,
+        "time": 5,
+        "date": 9,
+        "event": 19,
+        "qualifier": 20,
+        "user": 21,
+        "group": 29,
+        "terminal": 45,
+        "job": 53,
+        "smf_user": 69,
+    },
+    {
+        "system": 10,
+        "time": 2,
+        "date": 6,
+        "event": 16,
+        "qualifier": 17,
+        "user": 18,
+        "group": 26,
+        "terminal": 42,
+        "job": 50,
+        "smf_user": 66,
+    },
+)
+
+
+def _decode_type80_layout(payload: bytes, layout: dict[str, int]) -> _DecodedFieldPatch:
+    event_offset = layout["event"]
+    qualifier_offset = layout["qualifier"]
+    event_code = payload[event_offset] if len(payload) > event_offset else None
+    event_qualifier = payload[qualifier_offset] if len(payload) > qualifier_offset else None
+    system_offset = layout["system"]
+    user_offset = layout["user"]
+    group_offset = layout["group"]
+    terminal_offset = layout["terminal"]
+    job_offset = layout["job"]
+    smf_user_offset = layout["smf_user"]
+    system_id = _decode_system_id(payload[system_offset : system_offset + 4]) if len(payload) >= system_offset + 4 else None
+    timestamp = _decode_smf_timestamp(payload, time_offset=layout["time"], date_offset=layout["date"])
+    user_id = _decode_fixed_identifier(payload[user_offset : user_offset + 8]) if len(payload) >= user_offset + 8 else None
+    group_name = _decode_fixed_identifier(payload[group_offset : group_offset + 8]) if len(payload) >= group_offset + 8 else None
+    terminal_id = _decode_fixed_identifier(payload[terminal_offset : terminal_offset + 8]) if len(payload) >= terminal_offset + 8 else None
+    job_name = _decode_fixed_identifier(payload[job_offset : job_offset + 8]) if len(payload) >= job_offset + 8 else None
+    smf_user_id = _decode_fixed_identifier(payload[smf_user_offset : smf_user_offset + 8]) if len(payload) >= smf_user_offset + 8 else None
     action_hint = _EVENT_CODE_NAMES.get(event_code) if event_code is not None else None
 
     hints_action, user_candidates, resource_candidates, text_tokens = _decode_racf_hints(payload, None)
@@ -398,6 +446,8 @@ def _decode_type80_fields(payload: bytes) -> _DecodedFieldPatch:
 
     return {
         "subtype": None,
+        "system_id": system_id,
+        "timestamp": timestamp,
         "event_code": event_code,
         "event_qualifier": event_qualifier,
         "user_id": user_id,
@@ -410,6 +460,30 @@ def _decode_type80_fields(payload: bytes) -> _DecodedFieldPatch:
         "resource_candidates": resource_candidates,
         "text_tokens": text_tokens,
     }
+
+
+def _score_type80_layout(fields: _DecodedFieldPatch) -> int:
+    score = 0
+    event_code = fields.get("event_code")
+    if event_code in _EVENT_CODE_NAMES:
+        score += 4
+    elif isinstance(event_code, int) and 0 < event_code < 128:
+        score += 2
+    if fields.get("event_qualifier") is not None:
+        score += 1
+    if fields.get("system_id"):
+        score += 2
+    if fields.get("timestamp"):
+        score += 2
+    for name in ("user_id", "group_name", "terminal_id", "job_name", "smf_user_id"):
+        if fields.get(name):
+            score += 2
+    return score
+
+
+def _decode_type80_fields(payload: bytes) -> _DecodedFieldPatch:
+    decoded_layouts = [_decode_type80_layout(payload, layout) for layout in _TYPE80_LAYOUTS]
+    return max(decoded_layouts, key=_score_type80_layout)
 
 
 def _parse_type83_standard_relocates(data: bytes, start: int) -> dict[str, str | None]:
