@@ -629,6 +629,7 @@ def discover_smf_datasets(
     patterns: Iterable[str] | None = None,
     *,
     include_migrated: bool = False,
+    include_logstreams: bool = False,
     verbose: bool = False,
     sources_out: dict[str, list[str]] | None = None,
 ) -> list[str]:
@@ -664,13 +665,17 @@ def discover_smf_datasets(
     discovered: list[str] = []
     seen: set[str] = set()
 
-    def _add(names: list[str], label: str) -> list[str]:
+    def _add(names: list[str], label: str, *, include_in_discovered: bool = True) -> list[str]:
         """Add new names to discovered, record contribution in sources_out."""
         added: list[str] = []
         for n in names:
-            if n not in seen:
+            if n not in seen and include_in_discovered:
                 seen.add(n)
                 discovered.append(n)
+                added.append(n)
+            elif include_in_discovered and n in seen:
+                continue
+            elif not include_in_discovered:
                 added.append(n)
         if sources_out is not None:
             sources_out[label] = added
@@ -720,7 +725,7 @@ def discover_smf_datasets(
 
         # --- Source 8: D LOGGER SMF logstreams ---
         logstream_names = _query_smf_logstreams(verbose=verbose)
-        _add(logstream_names, "D LOGGER")
+        _add(logstream_names, "D LOGGER", include_in_discovered=include_logstreams)
 
         # --- Source 9: sibling expansion via catalog search ---
         sibling_patterns: list[str] = []
@@ -867,6 +872,7 @@ def iter_discovered_security_events(
     *,
     dataset_patterns: Iterable[str] | None = None,
     include_migrated: bool = False,
+    include_logstreams: bool = False,
     record_format: RecordFormat = "auto",
     strict_man: bool = False,
     include_all: bool = False,
@@ -874,7 +880,11 @@ def iter_discovered_security_events(
 ) -> Iterator[dict[str, Any]]:
     """Auto-discover SMF datasets and yield normalized security events from all of them."""
 
-    for dataset_name in discover_smf_datasets(dataset_patterns, include_migrated=include_migrated):
+    for dataset_name in discover_smf_datasets(
+        dataset_patterns,
+        include_migrated=include_migrated,
+        include_logstreams=include_logstreams,
+    ):
         yield from iter_security_events(
             dataset_name,
             record_format=record_format,
@@ -889,6 +899,7 @@ def read_discovered_security_events(
     *,
     dataset_patterns: Iterable[str] | None = None,
     include_migrated: bool = False,
+    include_logstreams: bool = False,
     record_format: RecordFormat = "auto",
     strict_man: bool = False,
     include_all: bool = False,
@@ -900,6 +911,7 @@ def read_discovered_security_events(
         iter_discovered_security_events(
             dataset_patterns=dataset_patterns,
             include_migrated=include_migrated,
+            include_logstreams=include_logstreams,
             record_format=record_format,
             strict_man=strict_man,
             include_all=include_all,
@@ -912,6 +924,7 @@ def read_discovered_security_dataframe(
     *,
     dataset_patterns: Iterable[str] | None = None,
     include_migrated: bool = False,
+    include_logstreams: bool = False,
     record_format: RecordFormat = "auto",
     strict_man: bool = False,
     include_all: bool = False,
@@ -923,6 +936,7 @@ def read_discovered_security_dataframe(
         iter_discovered_security_events(
             dataset_patterns=dataset_patterns,
             include_migrated=include_migrated,
+            include_logstreams=include_logstreams,
             record_format=record_format,
             strict_man=strict_man,
             include_all=include_all,

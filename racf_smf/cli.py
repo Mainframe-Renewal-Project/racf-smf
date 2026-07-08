@@ -117,6 +117,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print discovered SMF datasets and exit (useful for diagnosing pattern issues)",
     )
     parser.add_argument(
+        "--include-logstreams",
+        action="store_true",
+        help="Include D LOGGER-discovered logstream names in scan input instead of discovery summary only",
+    )
+    parser.add_argument(
         "--format",
         choices=("auto", "rdw", "smf", "man"),
         default="auto",
@@ -148,6 +153,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional output file for JSON lines (one record per line)",
     )
+    parser.add_argument(
+        "--dedup-events",
+        action="store_true",
+        help="Suppress duplicate emitted events by source, offset, and total length",
+    )
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Do not emit JSON events; print discovery and record-count summaries only",
+    )
     return parser
 
 
@@ -164,6 +179,8 @@ def main() -> int:
 
     if args.max_records < 0:
         raise SystemExit("--max-records must be >= 0")
+    if args.summary_only and args.json_out:
+        raise SystemExit("--summary-only cannot be combined with --json-out")
 
     subtypes = _parse_subtypes(args.zos_unix_subtypes)
     record_format = cast(RecordFormat, args.format)
@@ -176,7 +193,10 @@ def main() -> int:
     if use_discovery:
         sources: dict[str, list[str]] = {}
         discovered = discover_smf_datasets(
-            args.dataset_patterns or None, verbose=False, sources_out=sources
+            args.dataset_patterns or None,
+            verbose=False,
+            include_logstreams=args.include_logstreams,
+            sources_out=sources,
         )
 
         # Print source summary to stderr.
@@ -239,6 +259,7 @@ def main() -> int:
         if use_discovery:
             yield from iter_discovered_security_events(
                 dataset_patterns=args.dataset_patterns or None,
+                include_logstreams=args.include_logstreams,
                 record_format=record_format,
                 strict_man=args.strict_man,
                 include_all=True,  # filter below so we can count scanned records
@@ -255,6 +276,7 @@ def main() -> int:
             )
 
     out_handle = args.json_out.open("w", encoding="utf-8") if args.json_out else None
+    emitted_keys: set[tuple[str | None, int, int]] = set()
     try:
         for event in _events():
             scanned += 1
@@ -265,16 +287,27 @@ def main() -> int:
             if not args.all and not is_security:
                 continue
 
+            if args.dedup_events:
+                event_key = (
+                    event.get("source"),
+                    int(event["offset"]),
+                    int(event["total_length"]),
+                )
+                if event_key in emitted_keys:
+                    continue
+                emitted_keys.add(event_key)
+
             emitted += 1
             type_counter[int(event["record_type"])] += 1
             for tag in event["tags"]:
                 tag_counter[tag] += 1
 
-            line = json.dumps(event, separators=(",", ":"))
-            if out_handle:
-                out_handle.write(line + "\n")
-            else:
-                print(line)
+            if not args.summary_only:
+                line = json.dumps(event, separators=(",", ":"))
+                if out_handle:
+                    out_handle.write(line + "\n")
+                else:
+                    print(line)
 
             if args.max_records and emitted >= args.max_records:
                 break
