@@ -17,6 +17,20 @@ DEFAULT_SMF_DATASET_PATTERNS: tuple[str, ...] = (
 _DSNAME_BLOCK_RE = _re.compile(r"DSNAME\s*\(([^)]+)\)", _re.DOTALL | _re.IGNORECASE)
 
 
+def _derive_sibling_pattern(dataset_name: str) -> str | None:
+    """
+    Given an active SMF dataset name, return a wildcard pattern covering
+    all sibling MAN datasets under the same prefix.
+    For example: <HLQ>.<qualifier>.MAN03 -> <HLQ>.<qualifier>.MAN*
+    """
+    parts = dataset_name.upper().split(".")
+    last = parts[-1]
+    idx = last.find("MAN")
+    if idx >= 0:
+        return ".".join(parts[:-1]) + "." + last[:idx] + "MAN*"
+    return None
+
+
 def _query_active_smf_datasets(verbose: bool = False) -> list[str]:
     """
     Issue 'D SMF,O' via ZOAU opercmd and parse active DSNAME entries.
@@ -90,13 +104,39 @@ def discover_smf_datasets(
             print("Querying active SMF datasets via 'D SMF,O'...", flush=True)
         live = _query_active_smf_datasets(verbose=verbose)
         if live:
-            if verbose:
-                print(f"  Found {len(live)} dataset(s) from D SMF,O", flush=True)
+            # D SMF,O returns only the currently-active (write target) dataset(s).
+            # Expand each to its full sibling set via catalog search so historical
+            # records in already-full MAN datasets are also included.
+            sibling_patterns: list[str] = []
             for name in live:
+                pat = _derive_sibling_pattern(name)
+                if pat and pat not in sibling_patterns:
+                    sibling_patterns.append(pat)
+
+            expanded: list[str] = list(live)
+            expanded_seen: set[str] = set(live)
+
+            if sibling_patterns:
+                if verbose:
+                    print(
+                        f"  Expanding to siblings: {', '.join(sibling_patterns)}",
+                        flush=True,
+                    )
+                for pat in sibling_patterns:
+                    for name in _list_dataset_names(datasets, pat, include_migrated=include_migrated):
+                        if name not in expanded_seen:
+                            expanded_seen.add(name)
+                            expanded.append(name)
+
+            if verbose:
+                print(f"  Found {len(expanded)} dataset(s) after sibling expansion", flush=True)
+
+            for name in expanded:
                 if name not in seen:
                     seen.add(name)
                     discovered.append(name)
             return discovered
+
         if verbose:
             print("  D SMF,O returned no datasets, falling back to catalog search.", flush=True)
 

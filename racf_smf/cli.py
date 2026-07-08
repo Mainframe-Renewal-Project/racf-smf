@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dataset-input",
         action="store_true",
-        help="Treat input as a z/OS dataset name (for example SYS1.MAN01)",
+        help="Treat input as a z/OS dataset name (for example SMFDATA.MAN01)",
     )
     parser.add_argument(
         "--discover",
@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="dataset_patterns",
         metavar="PATTERN",
-        help="Dataset name pattern for discovery (repeatable, default: SYS1.*.MAN* and SYS1.MAN*)",
+        help="Dataset name pattern for discovery (repeatable). Overrides auto-discovery from D SMF,O.",
     )
     parser.add_argument(
         "--list-datasets",
