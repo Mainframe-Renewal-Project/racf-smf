@@ -19,6 +19,7 @@ The package is designed for two use cases:
   - RACF security events: SMF type 80
   - RACF initialization context: SMF type 81
   - z/OS UNIX security events: SMF type 83 with subtypes 2, 3, or 4
+  - z/OS UNIX file security attribute changes: SMF type 92 subtype 15
   - RACF compliance evidence: SMF type 1154 subtype 83
 - Supports `--all` to emit all SMF records.
 
@@ -127,6 +128,12 @@ RACF initialization records, SMF type 81, are emitted with
 `initialization_context`, including RACF database, UADS, option, audit,
 password, language, and RACF FMID fields. These records describe RACF startup
 state; they are context records, not per-user activity records.
+
+z/OS UNIX file system records, SMF type 92, are decoded using the IBM
+self-defining header triplets. Subtype 15 records are emitted as
+`event_family="ZOS_UNIX_SECURITY"` because they describe security attribute
+changes. The parser decodes the common product and identification sections,
+including job name, SAF user ID, and SAF group ID.
 
 ## Python API for pySEAR and analytics
 

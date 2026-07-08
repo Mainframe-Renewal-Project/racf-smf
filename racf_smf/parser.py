@@ -722,6 +722,8 @@ def _decode_type81_fields(payload: bytes) -> _DecodedFieldPatch:
 def _record_type_from_payload(payload: bytes, fallback: int) -> int:
     if len(payload) > 5 and payload[5] == 81:
         return 81
+    if _find_type92_layout(payload) is not None:
+        return 92
     return fallback
 
 
@@ -993,7 +995,6 @@ def _decode_type92_fields(payload: bytes) -> _DecodedFieldPatch:
 
     subsystem_offset, subsystem_length, subsystem_count = _self_defining_triplet(payload, layout["triplets"])
     identity_offset, identity_length, identity_count = _self_defining_triplet(payload, layout["triplets"] + 8)
-    data_offset, data_length, data_count = _self_defining_triplet(payload, layout["triplets"] + 16)
 
     subsystem_start = _section_start(payload, subsystem_offset, layout["adjust"])
     identity_start = _section_start(payload, identity_offset, layout["adjust"])
@@ -1013,7 +1014,10 @@ def _decode_type92_fields(payload: bytes) -> _DecodedFieldPatch:
         group_name = _decode_fixed_identifier(payload[identity_start + 24 : identity_start + 32])
         user_id = _decode_fixed_identifier(payload[identity_start + 32 : identity_start + 40])
 
-    action_hint = _TYPE92_SUBTYPE_NAMES.get(subtype, f"ZOS_UNIX_TYPE92_SUBTYPE_{subtype}" if subtype is not None else "ZOS_UNIX_TYPE92")
+    if subtype is None:
+        action_hint = "ZOS_UNIX_TYPE92"
+    else:
+        action_hint = _TYPE92_SUBTYPE_NAMES.get(subtype, f"ZOS_UNIX_TYPE92_SUBTYPE_{subtype}")
     text_tokens = _unique_preserve_order([value for value in (product_name, product_version, action_hint) if value])
 
     return {
@@ -1281,6 +1285,9 @@ def _classify(record_type: int, subtype: int | None, zos_unix_subtypes: set[int]
         if subtype is None or subtype in zos_unix_subtypes:
             tags.append("ZOS_UNIX_SECURITY")
 
+    if record_type == 92 and subtype == 15:
+        tags.append("ZOS_UNIX_SECURITY")
+
     if record_type == 1154 and subtype == 83:
         tags.append("RACF_COMPLIANCE")
 
@@ -1351,6 +1358,8 @@ def _extract_fields(payload: bytes) -> _DecodedFields:
         decoded.update(_decode_type81_fields(payload))
     elif record_type == 83:
         decoded.update(_decode_type83_fields(payload))
+    elif record_type == 92:
+        decoded.update(_decode_type92_fields(payload))
 
     return decoded
 

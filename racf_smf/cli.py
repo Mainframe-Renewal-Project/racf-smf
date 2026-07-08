@@ -437,7 +437,7 @@ def main() -> int:
         top_types = ", ".join(
             f"type {t}:{n}" for t, n in scanned_types.most_common(5)
         )
-        _warn("  No security records or RACF context records (type 80/81/83 or type 1154 subtype 83) found in scanned data.")
+        _warn("  No security records or RACF context records (type 80/81/83/92 or type 1154 subtype 83) found in scanned data.")
         _warn(f"  Top record types seen: {top_types}")
         _warn(f"  Tip: run with --all to emit all {scanned} records and inspect types.")
     if not scanned:
