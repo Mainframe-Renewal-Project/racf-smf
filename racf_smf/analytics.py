@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Iterator
 import os
 from pathlib import Path
@@ -809,6 +810,46 @@ def record_to_event(record: SmfRecord, *, source: str | None = None) -> dict[str
     }
 
 
+def event_user_ids(event: dict[str, Any]) -> tuple[str, ...]:
+    """Return all decoded user identifiers associated with an event."""
+
+    users = {
+        event.get("user_id"),
+        event.get("smf_user_id"),
+        event.get("address_space_user_id"),
+        event.get("authenticated_user_name"),
+        event.get("distributed_identity_user_name"),
+        *event.get("user_id_candidates", ()),
+    }
+    return tuple(sorted({str(user).upper() for user in users if user}))
+
+
+def event_action_label(event: dict[str, Any]) -> str:
+    """Return a readable action label for a normalized security event."""
+
+    return str(
+        event.get("action_hint")
+        or f"type={event.get('record_type')} event={event.get('event_code')}"
+    )
+
+
+def event_resource_label(event: dict[str, Any]) -> str:
+    """Return the best available resource/profile label for a security event."""
+
+    return str(
+        event.get("resource_name")
+        or event.get("profile_name")
+        or ", ".join(event.get("resource_candidates", ()))
+        or "-"
+    )
+
+
+def event_matches_user(event: dict[str, Any], user_id: str) -> bool:
+    """Return True when any decoded identity on the event matches user_id."""
+
+    return user_id.upper() in event_user_ids(event)
+
+
 def iter_security_events(
     path: str | Path,
     *,
@@ -968,3 +1009,293 @@ def read_discovered_security_dataframe(
             zos_unix_subtypes=zos_unix_subtypes,
         )
     )
+
+
+def iter_user_security_events(
+    user_id: str,
+    path: str | Path | None = None,
+    *,
+    dataset_patterns: Iterable[str] | None = None,
+    include_migrated: bool = False,
+    include_logstreams: bool = False,
+    record_format: RecordFormat = "auto",
+    strict_man: bool = False,
+    dataset_input: bool = False,
+    include_all: bool = False,
+    zos_unix_subtypes: set[int] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """
+    Yield normalized security events associated with a specific user.
+
+    If path is omitted, SMF datasets are auto-discovered. If path is supplied,
+    events are read from that file or dataset according to dataset_input.
+    """
+
+    if path is None:
+        events = iter_discovered_security_events(
+            dataset_patterns=dataset_patterns,
+            include_migrated=include_migrated,
+            include_logstreams=include_logstreams,
+            record_format=record_format,
+            strict_man=strict_man,
+            include_all=include_all,
+            zos_unix_subtypes=zos_unix_subtypes,
+        )
+    else:
+        events = iter_security_events(
+            path,
+            record_format=record_format,
+            strict_man=strict_man,
+            dataset_input=dataset_input,
+            include_all=include_all,
+            zos_unix_subtypes=zos_unix_subtypes,
+        )
+
+    for event in events:
+        if event_matches_user(event, user_id):
+            yield event
+
+
+def read_user_security_events(
+    user_id: str,
+    path: str | Path | None = None,
+    *,
+    dataset_patterns: Iterable[str] | None = None,
+    include_migrated: bool = False,
+    include_logstreams: bool = False,
+    record_format: RecordFormat = "auto",
+    strict_man: bool = False,
+    dataset_input: bool = False,
+    include_all: bool = False,
+    zos_unix_subtypes: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    """Return all security events associated with a specific user."""
+
+    return list(
+        iter_user_security_events(
+            user_id,
+            path,
+            dataset_patterns=dataset_patterns,
+            include_migrated=include_migrated,
+            include_logstreams=include_logstreams,
+            record_format=record_format,
+            strict_man=strict_man,
+            dataset_input=dataset_input,
+            include_all=include_all,
+            zos_unix_subtypes=zos_unix_subtypes,
+        )
+    )
+
+
+def _counter_rows(counter: Counter[str], *, limit: int | None = None) -> list[dict[str, Any]]:
+    rows = counter.most_common(limit)
+    return [{"value": value, "count": count} for value, count in rows]
+
+
+def _value_or_dash(value: Any) -> Any:
+    if value is None or value == "":
+        return "-"
+    return value
+
+
+def _event_detail(event: dict[str, Any], *, include_raw: bool) -> dict[str, Any]:
+    detail = {
+        "timestamp": event.get("timestamp"),
+        "event_family": event.get("event_family"),
+        "system_id": event.get("system_id"),
+        "source": event.get("source"),
+        "offset": event.get("offset"),
+        "record_type": event.get("record_type"),
+        "subtype": event.get("subtype"),
+        "identity": {
+            "matched_identities": event_user_ids(event),
+            "user_id": event.get("user_id"),
+            "smf_user_id": event.get("smf_user_id"),
+            "group_name": event.get("group_name"),
+            "address_space_user_id": event.get("address_space_user_id"),
+            "address_space_group_name": event.get("address_space_group_name"),
+            "authenticated_user_name": event.get("authenticated_user_name"),
+            "distributed_identity_user_name": event.get("distributed_identity_user_name"),
+        },
+        "action": {
+            "action_hint": event_action_label(event),
+            "event_code": event.get("event_code"),
+            "event_qualifier": event.get("event_qualifier"),
+            "job_name": event.get("job_name"),
+            "terminal_id": event.get("terminal_id"),
+        },
+        "target": {
+            "class_name": event.get("class_name"),
+            "resource_name": event.get("resource_name"),
+            "profile_name": event.get("profile_name"),
+            "best_target": event_resource_label(event),
+            "resource_candidates": tuple(event.get("resource_candidates", ())),
+        },
+        "product_context": {
+            "product_name": event.get("product_name"),
+            "product_version": event.get("product_version"),
+            "authenticated_user_registry": event.get("authenticated_user_registry"),
+            "authenticated_user_host": event.get("authenticated_user_host"),
+            "authenticated_user_oid": event.get("authenticated_user_oid"),
+            "distributed_identity_registry": event.get("distributed_identity_registry"),
+        },
+    }
+    if include_raw:
+        detail["raw_event"] = event
+    return detail
+
+
+def build_user_security_report(
+    user_id: str,
+    events: Iterable[dict[str, Any]],
+    *,
+    max_detail_events: int = 50,
+    raw_samples: int = 0,
+) -> dict[str, Any]:
+    """Build a drilldown report from events that are already filtered to a user."""
+
+    matched_events = list(events)
+    sorted_events = sorted(
+        matched_events,
+        key=lambda event: event.get("timestamp") or "",
+        reverse=True,
+    )
+    detail_events = sorted_events[:max_detail_events]
+
+    return {
+        "target_user": user_id.upper(),
+        "matched_count": len(matched_events),
+        "summaries": {
+            "by_action": _counter_rows(Counter(event_action_label(event) for event in matched_events)),
+            "by_class": _counter_rows(Counter(event.get("class_name") or "-" for event in matched_events)),
+            "by_resource": _counter_rows(Counter(event_resource_label(event) for event in matched_events), limit=20),
+            "by_job": _counter_rows(Counter(event.get("job_name") or "-" for event in matched_events)),
+            "by_terminal": _counter_rows(Counter(event.get("terminal_id") or "-" for event in matched_events)),
+            "by_source": _counter_rows(Counter(event.get("source") or "-" for event in matched_events)),
+        },
+        "events": [
+            _event_detail(event, include_raw=index < raw_samples)
+            for index, event in enumerate(detail_events)
+        ],
+        "max_detail_events": max_detail_events,
+        "raw_samples": raw_samples,
+    }
+
+
+def read_user_security_report(
+    user_id: str,
+    path: str | Path | None = None,
+    *,
+    dataset_patterns: Iterable[str] | None = None,
+    include_migrated: bool = False,
+    include_logstreams: bool = False,
+    record_format: RecordFormat = "auto",
+    strict_man: bool = False,
+    dataset_input: bool = False,
+    include_all: bool = False,
+    zos_unix_subtypes: set[int] | None = None,
+    max_detail_events: int = 50,
+    raw_samples: int = 0,
+) -> dict[str, Any]:
+    """Read events for a user and return a ready-to-render drilldown report."""
+
+    return build_user_security_report(
+        user_id,
+        iter_user_security_events(
+            user_id,
+            path,
+            dataset_patterns=dataset_patterns,
+            include_migrated=include_migrated,
+            include_logstreams=include_logstreams,
+            record_format=record_format,
+            strict_man=strict_man,
+            dataset_input=dataset_input,
+            include_all=include_all,
+            zos_unix_subtypes=zos_unix_subtypes,
+        ),
+        max_detail_events=max_detail_events,
+        raw_samples=raw_samples,
+    )
+
+
+def _format_summary(title: str, rows: list[dict[str, Any]]) -> list[str]:
+    lines = [title]
+    for row in rows:
+        lines.append(f"  {row['count']:6}  {row['value']}")
+    lines.append("")
+    return lines
+
+
+def _format_field(label: str, value: Any) -> str:
+    return f"  {label:<28} {_value_or_dash(value)}"
+
+
+def format_user_security_report(report: dict[str, Any]) -> str:
+    """Format a user security drilldown report as readable text."""
+
+    from pprint import pformat
+
+    lines = [
+        f"Security event drilldown for user: {report['target_user']}",
+        f"Matched events: {report['matched_count']}",
+        "",
+    ]
+    summaries = report["summaries"]
+    lines.extend(_format_summary("Summary by action", summaries["by_action"]))
+    lines.extend(_format_summary("Summary by RACF class", summaries["by_class"]))
+    lines.extend(_format_summary("Top resources/profiles", summaries["by_resource"]))
+    lines.extend(_format_summary("Summary by job", summaries["by_job"]))
+    lines.extend(_format_summary("Summary by terminal", summaries["by_terminal"]))
+    lines.extend(_format_summary("Summary by source", summaries["by_source"]))
+
+    lines.append(f"Detailed events, newest first, showing up to {report['max_detail_events']}")
+    for event_number, event in enumerate(report["events"], start=1):
+        identity = event["identity"]
+        action = event["action"]
+        target = event["target"]
+        product_context = event["product_context"]
+
+        lines.extend([
+            "",
+            f"Event {event_number}",
+            _format_field("timestamp", event.get("timestamp")),
+            _format_field("event family", event.get("event_family")),
+            _format_field("system id", event.get("system_id")),
+            _format_field("source", event.get("source")),
+            _format_field("offset", event.get("offset")),
+            _format_field("record type", event.get("record_type")),
+            _format_field("subtype", event.get("subtype")),
+            "  Identity",
+            _format_field("matched identities", ", ".join(identity["matched_identities"])),
+            _format_field("user id", identity.get("user_id")),
+            _format_field("SMF user id", identity.get("smf_user_id")),
+            _format_field("group name", identity.get("group_name")),
+            _format_field("address-space user", identity.get("address_space_user_id")),
+            _format_field("address-space group", identity.get("address_space_group_name")),
+            _format_field("authenticated user", identity.get("authenticated_user_name")),
+            _format_field("distributed identity", identity.get("distributed_identity_user_name")),
+            "  Action",
+            _format_field("action hint", action.get("action_hint")),
+            _format_field("event code", action.get("event_code")),
+            _format_field("event qualifier", action.get("event_qualifier")),
+            _format_field("job name", action.get("job_name")),
+            _format_field("terminal id", action.get("terminal_id")),
+            "  Target",
+            _format_field("class name", target.get("class_name")),
+            _format_field("resource name", target.get("resource_name")),
+            _format_field("profile name", target.get("profile_name")),
+            _format_field("best target", target.get("best_target")),
+            _format_field("resource candidates", ", ".join(target["resource_candidates"])),
+            "  Product/context",
+            _format_field("product name", product_context.get("product_name")),
+            _format_field("product version", product_context.get("product_version")),
+            _format_field("auth registry", product_context.get("authenticated_user_registry")),
+            _format_field("auth host", product_context.get("authenticated_user_host")),
+            _format_field("auth oid", product_context.get("authenticated_user_oid")),
+            _format_field("distributed registry", product_context.get("distributed_identity_registry")),
+        ])
+        if "raw_event" in event:
+            lines.append("  Raw decoded event")
+            lines.append("    " + pformat(event["raw_event"], width=100).replace("\n", "\n    "))
+
+    return "\n".join(lines)

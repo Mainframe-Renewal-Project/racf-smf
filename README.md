@@ -164,6 +164,30 @@ for event in iter_discovered_security_events():
   process(event)
 ```
 
+Build a user-focused drilldown report from discovered SMF data:
+
+```python
+from racf_smf import format_user_security_report, read_user_security_report
+
+report = read_user_security_report(
+  "USER01",
+  include_logstreams=False,
+  max_detail_events=50,
+  raw_samples=3,
+)
+
+print(format_user_security_report(report))
+```
+
+Filter events for a specific user while keeping the normalized event dictionaries:
+
+```python
+from racf_smf import iter_user_security_events
+
+for event in iter_user_security_events("USER01"):
+  print(event["timestamp"], event["action_hint"], event["resource_name"])
+```
+
 Use custom discovery patterns when your site naming differs:
 
 ```python
