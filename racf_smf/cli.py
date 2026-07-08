@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 from typing import cast
 
-from .analytics import iter_security_events
+from .analytics import discover_smf_datasets, iter_discovered_security_events, iter_security_events
 from .parser import RecordFormat
 
 
@@ -33,12 +33,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "input",
-        help="Path to SMF binary data or plain z/OS dataset name when --dataset-input is set",
+        nargs="?",
+        help="Path to SMF binary data or plain z/OS dataset name when --dataset-input is set. Omit to auto-discover datasets via ZOAU.",
     )
     parser.add_argument(
         "--dataset-input",
         action="store_true",
         help="Treat input as a z/OS dataset name (for example SYS1.MAN01)",
+    )
+    parser.add_argument(
+        "--discover",
+        action="store_true",
+        help="Auto-discover SMF datasets using ZOAU and process all of them",
+    )
+    parser.add_argument(
+        "--dataset-pattern",
+        action="append",
+        dest="dataset_patterns",
+        metavar="PATTERN",
+        help="Dataset name pattern for discovery (repeatable, default: SYS1.*.MAN* and SYS1.MAN*)",
     )
     parser.add_argument(
         "--format",
@@ -78,10 +91,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
-    if not args.dataset_input and not _is_dataset_source(args.input):
-        input_path = Path(args.input)
-        if not input_path.exists():
-            raise SystemExit(f"Input file not found: {args.input}")
+    use_discovery = args.discover or args.input is None
+
+    if not use_discovery:
+        if not args.dataset_input and not _is_dataset_source(args.input):
+            input_path = Path(args.input)
+            if not input_path.exists():
+                raise SystemExit(f"Input file not found: {args.input}")
 
     if args.max_records < 0:
         raise SystemExit("--max-records must be >= 0")
@@ -92,16 +108,34 @@ def main() -> int:
     type_counter: Counter[int] = Counter()
     tag_counter: Counter[str] = Counter()
 
+    if use_discovery:
+        discovered = discover_smf_datasets(args.dataset_patterns or None)
+        if not discovered:
+            raise SystemExit("No SMF datasets found. Use --dataset-pattern to specify custom patterns.")
+        print(f"Discovered {len(discovered)} dataset(s): {', '.join(discovered)}", flush=True)
+
+    def _events():
+        if use_discovery:
+            yield from iter_discovered_security_events(
+                dataset_patterns=args.dataset_patterns or None,
+                record_format=record_format,
+                strict_man=args.strict_man,
+                include_all=args.all,
+                zos_unix_subtypes=subtypes,
+            )
+        else:
+            yield from iter_security_events(
+                args.input,
+                record_format=record_format,
+                strict_man=args.strict_man,
+                dataset_input=args.dataset_input,
+                include_all=args.all,
+                zos_unix_subtypes=subtypes,
+            )
+
     out_handle = args.json_out.open("w", encoding="utf-8") if args.json_out else None
     try:
-        for event in iter_security_events(
-            args.input,
-            record_format=record_format,
-            strict_man=args.strict_man,
-            dataset_input=args.dataset_input,
-            include_all=args.all,
-            zos_unix_subtypes=subtypes,
-        ):
+        for event in _events():
             emitted += 1
             type_counter[int(event["record_type"])] += 1
             for tag in event["tags"]:
