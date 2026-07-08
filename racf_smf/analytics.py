@@ -15,6 +15,8 @@ _SEAR_SENTINEL = "__sear_available__"
 DEFAULT_SMF_DATASET_PATTERNS: tuple[str, ...] = (
     "SYS1.*.MAN*",
     "SYS1.MAN*",
+    "*.SMF.*",
+    "*.SMF.*.**",
 )
 
 _DSN_FIRST_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ#@$")
@@ -741,8 +743,13 @@ def _list_dataset_names(datasets_module, pattern: str, *, include_migrated: bool
     try:
         return datasets_module.list_dataset_names(pattern, migrated=include_migrated) or []
     except TypeError:
-        # Older ZOAU levels may not support the migrated keyword.
-        return datasets_module.list_dataset_names(pattern) or []
+        try:
+            # Older ZOAU levels may not support the migrated keyword.
+            return datasets_module.list_dataset_names(pattern) or []
+        except Exception:  # noqa: BLE001
+            return []
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _import_zoau_datasets():

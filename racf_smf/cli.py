@@ -158,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="dataset_patterns",
         metavar="PATTERN",
         help=(
-            "Dataset name pattern to use during discovery, for example HLQ.*.MAN* or HLQ.SMF.DATA.*. "
+            "Dataset name pattern to use during discovery, for example HLQ.*.MAN* or HLQ.SMF.*.**. "
             "This option is repeatable. Supplying one or more patterns bypasses live-source discovery "
             "and uses the provided catalog search patterns instead."
         ),
