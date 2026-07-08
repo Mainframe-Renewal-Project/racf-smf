@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -68,9 +69,17 @@ def _dim(text: str) -> str:
     return _colored(text, _C.DIM)
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible_len(text: str) -> int:
+    """Length of text as rendered in a terminal, ignoring ANSI color escapes."""
+    return len(_ANSI_RE.sub("", text))
+
+
 def _pad_plain(text: str, width: int) -> str:
-    """Pad text to a fixed width based on plain string length."""
-    return text + " " * max(0, width - len(text))
+    """Pad text to a fixed width based on visible string length."""
+    return text + " " * max(0, width - _visible_len(text))
 
 
 def _parse_subtypes(raw: str) -> set[int]:
@@ -275,7 +284,7 @@ def main() -> int:
         print(mid, file=sys.stderr)
         for marker, label, plain_result, rendered_result in rows:
             print(
-                f"  │ {_pad_plain(marker, status_width)} │ {_pad_plain(label, source_width)} │ {rendered_result}{' ' * max(0, result_width - len(plain_result))} │",
+                f"  │ {_pad_plain(marker, status_width)} │ {_pad_plain(label, source_width)} │ {_pad_plain(rendered_result, result_width)} │",
                 file=sys.stderr,
             )
         print(bot, file=sys.stderr)
