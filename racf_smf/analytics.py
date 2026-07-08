@@ -136,7 +136,7 @@ def _read_logstream_records(logstream_name: str) -> list[bytes]:
         return []
 
 
-
+def _query_active_smf_datasets(verbose: bool = False) -> list[str]:
     """
     Issue 'D SMF,O' via ZOAU opercmd and parse active DSNAME entries.
     Also extracts the active SMFPRMxx member name so the PARMLIB member
