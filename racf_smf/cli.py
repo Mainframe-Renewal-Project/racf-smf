@@ -260,21 +260,22 @@ def main() -> int:
         status_header = "Status"
         source_header = "Source"
         result_header = "Result"
+        status_width = max(len(status_header), 1)
         source_width = max(len(source_header), *(len(label) for _, label, _, _ in rows))
         result_width = max(len(result_header), *(len(plain_result) for _, _, plain_result, _ in rows))
 
-        top = f"  ┌{'─' * 3}┬{'─' * (source_width + 2)}┬{'─' * (result_width + 2)}┐"
-        mid = f"  ├{'─' * 3}┼{'─' * (source_width + 2)}┼{'─' * (result_width + 2)}┤"
-        bot = f"  └{'─' * 3}┴{'─' * (source_width + 2)}┴{'─' * (result_width + 2)}┘"
+        top = f"  ┌{'─' * (status_width + 2)}┬{'─' * (source_width + 2)}┬{'─' * (result_width + 2)}┐"
+        mid = f"  ├{'─' * (status_width + 2)}┼{'─' * (source_width + 2)}┼{'─' * (result_width + 2)}┤"
+        bot = f"  └{'─' * (status_width + 2)}┴{'─' * (source_width + 2)}┴{'─' * (result_width + 2)}┘"
         print(top, file=sys.stderr)
         print(
-            f"  │ {_pad_plain(status_header, 1)} │ {_pad_plain(source_header, source_width)} │ {_pad_plain(result_header, result_width)} │",
+            f"  │ {_pad_plain(status_header, status_width)} │ {_pad_plain(source_header, source_width)} │ {_pad_plain(result_header, result_width)} │",
             file=sys.stderr,
         )
         print(mid, file=sys.stderr)
         for marker, label, plain_result, rendered_result in rows:
             print(
-                f"  │ {marker} │ {_pad_plain(label, source_width)} │ {rendered_result}{' ' * max(0, result_width - len(plain_result))} │",
+                f"  │ {_pad_plain(marker, status_width)} │ {_pad_plain(label, source_width)} │ {rendered_result}{' ' * max(0, result_width - len(plain_result))} │",
                 file=sys.stderr,
             )
         print(bot, file=sys.stderr)
