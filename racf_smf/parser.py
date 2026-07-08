@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+import os
 from pathlib import Path
 import struct
+import tempfile
 from typing import Iterator, Literal
 
 
@@ -49,6 +51,26 @@ def _read_records_from_dataset(dataset_name: str) -> list[bytes]:
     if not isinstance(records, list):
         raise RuntimeError(f"Unexpected ZOAU response while reading dataset {dataset_name}")
     return records
+
+
+def _read_dataset_stream_via_copy(dataset_name: str) -> bytes:
+    """Copy a dataset to a temporary USS file and return raw bytes."""
+
+    try:
+        from zoautil_py import datasets  # type: ignore[import-not-found]
+    except ImportError as exc:  # pragma: no cover - depends on z/OS runtime
+        raise RuntimeError(
+            "ZOAU is required for dataset input. Install zoautil_py or use a local binary file instead."
+        ) from exc
+
+    fd, temp_name = tempfile.mkstemp(prefix="racf_smf_", suffix=".bin")
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        datasets.copy(dataset_name, str(temp_path), force=True)
+        return temp_path.read_bytes()
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _normalize_dataset_record(record: bytes) -> bytes:
@@ -265,6 +287,15 @@ def _iter_records_smf(data: bytes) -> Iterator[tuple[int, int, bytes]]:
         raise ValueError(f"Trailing bytes after SMF parsing at offset {cursor}")
 
 
+def _iterator_from_data(data: bytes, *, record_format: RecordFormat, strict_man: bool) -> Iterator[tuple[int, int, bytes]]:
+    active_format = _detect_format(data) if record_format == "auto" else record_format
+    if active_format == "rdw":
+        return _iter_records_rdw(data)
+    if active_format == "man":
+        return _iter_records_man(data, strict=strict_man)
+    return _iter_records_smf(data)
+
+
 def _detect_format(data: bytes) -> RecordFormat:
     if len(data) < 8:
         return "smf"
@@ -301,22 +332,20 @@ def iter_smf_records(
 ) -> Iterator[SmfRecord]:
     dataset_name = str(path).strip() if dataset_input else _dataset_name_from_source(path)
     if dataset_name is not None:
-        if strict_man and record_format in ("man", "auto"):
-            raise ValueError(
-                "--strict-man is only supported for byte-stream MAN files, not ZOAU dataset record reads."
-            )
-        iterator = _iter_records_dataset(_read_records_from_dataset(dataset_name))
+        try:
+            iterator = _iter_records_dataset(_read_records_from_dataset(dataset_name))
+        except OSError as exc:
+            # Some dataset organizations reject file-positioning operations in
+            # read_as_bytes; fall back to a raw byte-stream parse via copy.
+            message = str(exc)
+            if getattr(exc, "errno", None) != 12 and "EDC5012I" not in message:
+                raise
+            data = _read_dataset_stream_via_copy(dataset_name)
+            iterator = _iterator_from_data(data, record_format=record_format, strict_man=strict_man)
     else:
         file_path = Path(path)
         data = file_path.read_bytes()
-
-        active_format = _detect_format(data) if record_format == "auto" else record_format
-        if active_format == "rdw":
-            iterator = _iter_records_rdw(data)
-        elif active_format == "man":
-            iterator = _iter_records_man(data, strict=strict_man)
-        else:
-            iterator = _iter_records_smf(data)
+        iterator = _iterator_from_data(data, record_format=record_format, strict_man=strict_man)
 
     for offset, total_length, payload in iterator:
         record_type, subtype, system_id = _extract_fields(payload)

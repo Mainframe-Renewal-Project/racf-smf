@@ -84,6 +84,10 @@ racf-smf path\to\SYS1.MAN01.bin --format man --strict-man --json-out security_re
 
 Note: `--strict-man` applies to byte-stream MAN files. ZOAU dataset reads are record-oriented.
 
+If ZOAU raises `EDC5012I File positioning is not allowed for this data set`, the parser
+automatically falls back to copying the dataset to a temporary USS file and parsing the
+raw byte stream.
+
 Write JSON lines to a file and limit output:
 
 ```powershell
