@@ -15,8 +15,8 @@ _SEAR_SENTINEL = "__sear_available__"
 DEFAULT_SMF_DATASET_PATTERNS: tuple[str, ...] = (
     "SYS1.*.MAN*",
     "SYS1.MAN*",
-    "*.SMF.*",
-    "*.SMF.*.**",
+    "*.SMF*.*",
+    "*.SMF*.*.**",
 )
 
 _DSN_FIRST_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ#@$")

@@ -232,7 +232,7 @@ Use custom discovery patterns when your site naming differs:
 from racf_smf import read_discovered_security_events
 
 events = read_discovered_security_events(
-  dataset_patterns=["HLQ.*.MAN*", "HLQ.SMF.*.**"],
+  dataset_patterns=["HLQ.*.MAN*", "HLQ.SMF*.DATASET", "HLQ.SMF*.*.**"],
   include_migrated=False,
 )
 ```
