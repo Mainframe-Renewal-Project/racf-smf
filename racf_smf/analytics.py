@@ -52,6 +52,39 @@ def _opercmd_output(command: str, verbose: bool = False) -> str | None:
         return None
 
 
+def _query_sear_smf_dataset_profiles(verbose: bool = False) -> list[str]:
+    """
+    Use pySEAR to search for RACF dataset profiles whose names contain 'MAN'.
+
+    SEAR's search operates on RACF *profiles* (not actual DASD datasets), but
+    profile names reflect the dataset naming convention at the site.  Non-generic
+    profile names are returned as candidate dataset names; generic profiles
+    (containing wildcards) are used to derive sibling patterns for catalog search.
+
+    Silently returns an empty list when sear is not installed.
+    """
+    try:
+        from sear import sear  # type: ignore[import-not-found]
+    except ImportError:
+        return []
+
+    try:
+        result = sear({"operation": "search", "admin_type": "dataset", "dataset_filter": "MAN"})
+        profiles: list[str] = getattr(result, "result", None) or []
+        if not isinstance(profiles, list):
+            return []
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(f"  SEAR dataset search failed: {exc}", flush=True)
+        return []
+
+    # Return only non-generic profile names (no wildcards) as usable dataset names.
+    candidates = [p for p in profiles if isinstance(p, str) and "*" not in p and "%" not in p]
+    if verbose:
+        print(f"  SEAR found {len(profiles)} dataset profile(s), {len(candidates)} non-generic", flush=True)
+    return candidates
+
+
 def _parse_dsnames_from_output(output: str) -> list[str]:
     """Extract all dataset names from a DSNAME(...) block in operator command output."""
     match = _DSNAME_BLOCK_RE.search(output)
@@ -218,6 +251,15 @@ def discover_smf_datasets(
                 live.append(name)
         if verbose and smfd_names:
             print(f"  D SMF,D added {len(smfd_names)} additional dataset(s)", flush=True)
+
+        # --- Tertiary: pySEAR RACF dataset profile search ---
+        if verbose:
+            print("Querying RACF dataset profiles via pySEAR...", flush=True)
+        sear_names = _query_sear_smf_dataset_profiles(verbose=verbose)
+        for name in sear_names:
+            if name not in live_seen:
+                live_seen.add(name)
+                live.append(name)
 
         if live:
             # D SMF,O returns only the currently-active (write target) dataset(s).

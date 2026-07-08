@@ -22,4 +22,5 @@ analytics = [
 ]
 zos = [
   "zoautil_py>=1.4",
+  "sear",
 ]
