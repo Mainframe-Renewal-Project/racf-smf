@@ -84,7 +84,7 @@ def events_to_dataframe(events: Iterable[dict[str, Any]]):
     """
 
     try:
-        import pandas as pd
+        import pandas as pd  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover - depends on optional dependency
         raise ImportError("pandas is required for DataFrame export. Install with: pip install pandas") from exc
 
