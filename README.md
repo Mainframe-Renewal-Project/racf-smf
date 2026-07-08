@@ -152,6 +152,29 @@ for event in iter_security_events("SYS1.MANX", dataset_input=True):
   process(event)
 ```
 
+Automatically discover SMF MAN datasets with ZOAU and ingest all of them:
+
+```python
+from racf_smf import discover_smf_datasets, iter_discovered_security_events
+
+datasets = discover_smf_datasets()
+print(datasets)
+
+for event in iter_discovered_security_events():
+  process(event)
+```
+
+Use custom discovery patterns when your site naming differs:
+
+```python
+from racf_smf import read_discovered_security_events
+
+events = read_discovered_security_events(
+  dataset_patterns=["SYS1.*.MAN*", "SMFPRD.*.MAN*"],
+  include_migrated=False,
+)
+```
+
 ## Notes and assumptions
 
 - The parser extracts common SMF header fields using standard offsets:
