@@ -20,3 +20,6 @@ racf-smf = "racf_smf.cli:main"
 analytics = [
   "pandas>=2.2",
 ]
+zos = [
+  "zoautil_py>=1.4",
+]

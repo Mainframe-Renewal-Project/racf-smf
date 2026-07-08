@@ -27,7 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="racf-smf",
         description="Fetch RACF and z/OS UNIX security SMF records from a binary SMF file.",
     )
-    parser.add_argument("input", type=Path, help="Path to SMF binary data")
+    parser.add_argument(
+        "input",
+        help="Path to SMF binary data, or z/OS dataset via mvs://HLQ.DATA.SET",
+    )
     parser.add_argument(
         "--format",
         choices=("auto", "rdw", "smf", "man"),

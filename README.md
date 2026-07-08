@@ -40,6 +40,12 @@ For DataFrame-based analysis:
 pip install -e .[analytics]
 ```
 
+For z/OS dataset access through ZOAU:
+
+```powershell
+pip install -e .[zos]
+```
+
 ## Usage
 
 ```powershell
@@ -58,11 +64,25 @@ Parse a raw MAN dataset extract directly:
 racf-smf path\to\SYS1.MAN01.bin --format man --json-out security_records.jsonl
 ```
 
+Read directly from an MVS dataset using ZOAU (USS on z/OS):
+
+```sh
+racf-smf mvs://SYS1.MANX --json-out /u/you/security_records.jsonl
+```
+
+Read a specific generation or quoted dataset name:
+
+```sh
+racf-smf "mvs://HLQ.SMF.DAILY.G0001V00" --json-out /u/you/security_records.jsonl
+```
+
 Validate MAN extract integrity while parsing (fail fast on malformed BDW/RDW segments):
 
 ```powershell
 racf-smf path\to\SYS1.MAN01.bin --format man --strict-man --json-out security_records.jsonl
 ```
+
+Note: `--strict-man` applies to byte-stream MAN files. ZOAU dataset reads are record-oriented.
 
 Write JSON lines to a file and limit output:
 

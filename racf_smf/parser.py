@@ -25,6 +25,50 @@ class SmfRecord:
         return asdict(self)
 
 
+def _dataset_name_from_source(source: str | Path) -> str | None:
+    value = str(source)
+    if value.startswith("mvs://"):
+        name = value[len("mvs://") :].strip()
+        return name or None
+
+    if value.startswith("//'") and value.endswith("'") and len(value) > 4:
+        return value[3:-1]
+
+    return None
+
+
+def _read_records_from_dataset(dataset_name: str) -> list[bytes]:
+    try:
+        from zoautil_py import datasets
+    except ImportError as exc:  # pragma: no cover - depends on z/OS runtime
+        raise RuntimeError(
+            "ZOAU is required for dataset input. Install zoautil_py or use a local binary file instead."
+        ) from exc
+
+    records = datasets.read_as_bytes(dataset_name, records=0)
+    if not isinstance(records, list):
+        raise RuntimeError(f"Unexpected ZOAU response while reading dataset {dataset_name}")
+    return records
+
+
+def _normalize_dataset_record(record: bytes) -> bytes:
+    # Some APIs return VB records with the RDW still attached; strip it when present.
+    if len(record) >= 4:
+        rdw_length = struct.unpack(">H", record[0:2])[0]
+        if rdw_length == len(record) and record[2] == 0 and record[3] == 0:
+            return record[4:]
+    return record
+
+
+def _iter_records_dataset(records: list[bytes]) -> Iterator[tuple[int, int, bytes]]:
+    offset = 0
+    for record in records:
+        payload = _normalize_dataset_record(record)
+        total_length = len(record)
+        yield offset, total_length, payload
+        offset += total_length
+
+
 def _decode_system_id(raw: bytes) -> str | None:
     raw = raw.rstrip(b"\x00 ")
     if not raw:
@@ -254,16 +298,24 @@ def iter_smf_records(
     *,
     strict_man: bool = False,
 ) -> Iterator[SmfRecord]:
-    file_path = Path(path)
-    data = file_path.read_bytes()
-
-    active_format = _detect_format(data) if record_format == "auto" else record_format
-    if active_format == "rdw":
-        iterator = _iter_records_rdw(data)
-    elif active_format == "man":
-        iterator = _iter_records_man(data, strict=strict_man)
+    dataset_name = _dataset_name_from_source(path)
+    if dataset_name is not None:
+        if strict_man and record_format in ("man", "auto"):
+            raise ValueError(
+                "--strict-man is only supported for byte-stream MAN files, not ZOAU dataset record reads."
+            )
+        iterator = _iter_records_dataset(_read_records_from_dataset(dataset_name))
     else:
-        iterator = _iter_records_smf(data)
+        file_path = Path(path)
+        data = file_path.read_bytes()
+
+        active_format = _detect_format(data) if record_format == "auto" else record_format
+        if active_format == "rdw":
+            iterator = _iter_records_rdw(data)
+        elif active_format == "man":
+            iterator = _iter_records_man(data, strict=strict_man)
+        else:
+            iterator = _iter_records_smf(data)
 
     for offset, total_length, payload in iterator:
         record_type, subtype, system_id = _extract_fields(payload)
