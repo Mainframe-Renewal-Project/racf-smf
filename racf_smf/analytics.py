@@ -212,16 +212,20 @@ def discover_smf_datasets(
     *,
     include_migrated: bool = False,
     verbose: bool = False,
+    sources_out: dict[str, list[str]] | None = None,
 ) -> list[str]:
     """
     Discover active SMF datasets.
 
     Strategy (in order):
-    1. If no custom patterns are given, query 'D SMF,O' via ZOAU opercmd to
-       read the active DSNAME list directly from the running system.  This is
-       naming-convention-agnostic and works for any site.
-    2. Fall back to ZOAU catalog search using the supplied (or default) patterns
-       when opercmd is unavailable or returns no results.
+    1. D SMF,O  — active write-target dataset(s) + PARMLIB member for all configured names.
+    2. D SMF,D  — all dataset statuses (ACTIVE, ALTERNATE, FULL, EMPTY).
+    3. pySEAR   — RACF dataset profiles whose names contain 'MAN'.
+    4. Sibling expansion — catalog wildcard derived from any name found above.
+    5. Catalog patterns  — explicit or default patterns when all else fails.
+
+    If ``sources_out`` is provided it is populated with a mapping of
+    source label → list of dataset names that source contributed.
     """
 
     try:
@@ -231,87 +235,65 @@ def discover_smf_datasets(
             "ZOAU is required for automatic dataset discovery. Install zoautil_py first."
         ) from exc
 
+    if sources_out is not None:
+        sources_out.clear()
+
     discovered: list[str] = []
     seen: set[str] = set()
 
-    # --- Primary: read active datasets directly from D SMF,O + PARMLIB ---
+    def _add(names: list[str], label: str) -> list[str]:
+        """Add new names to discovered, record contribution in sources_out."""
+        added: list[str] = []
+        for n in names:
+            if n not in seen:
+                seen.add(n)
+                discovered.append(n)
+                added.append(n)
+        if sources_out is not None:
+            sources_out[label] = added
+        return added
+
+    # --- Source 1: D SMF,O + active PARMLIB member ---
     if patterns is None:
-        if verbose:
-            print("Querying active SMF datasets via 'D SMF,O'...", flush=True)
         live = _query_active_smf_datasets(verbose=verbose)
+        _add(live, "D SMF,O + PARMLIB")
 
-        # --- Secondary: D SMF,D for full dataset status listing ---
-        if verbose:
-            print("Querying all SMF dataset statuses via 'D SMF,D'...", flush=True)
-        smfd_names = _query_smf_d_datasets(verbose=verbose)
-        live_seen = set(live)
-        for name in smfd_names:
-            if name not in live_seen:
-                live_seen.add(name)
-                live.append(name)
-        if verbose and smfd_names:
-            print(f"  D SMF,D added {len(smfd_names)} additional dataset(s)", flush=True)
+        # --- Source 2: D SMF,D ---
+        smfd = _query_smf_d_datasets(verbose=verbose)
+        _add(smfd, "D SMF,D")
 
-        # --- Tertiary: pySEAR RACF dataset profile search ---
-        if verbose:
-            print("Querying RACF dataset profiles via pySEAR...", flush=True)
+        # --- Source 3: pySEAR RACF profile search ---
         sear_names = _query_sear_smf_dataset_profiles(verbose=verbose)
-        for name in sear_names:
-            if name not in live_seen:
-                live_seen.add(name)
-                live.append(name)
+        _add(sear_names, "pySEAR")
 
-        if live:
-            # D SMF,O returns only the currently-active (write target) dataset(s).
-            # Expand each to its full sibling set via catalog search so historical
-            # records in already-full MAN datasets are also included.
-            sibling_patterns: list[str] = []
-            for name in live:
-                pat = _derive_sibling_pattern(name)
-                if pat and pat not in sibling_patterns:
-                    sibling_patterns.append(pat)
+        # --- Source 4: sibling expansion via catalog search ---
+        sibling_patterns: list[str] = []
+        for name in list(seen):
+            pat = _derive_sibling_pattern(name)
+            if pat and pat not in sibling_patterns:
+                sibling_patterns.append(pat)
 
-            expanded: list[str] = list(live)
-            expanded_seen: set[str] = set(live)
-
-            if sibling_patterns:
-                if verbose:
-                    print(
-                        f"  Expanding to siblings: {', '.join(sibling_patterns)}",
-                        flush=True,
-                    )
-                for pat in sibling_patterns:
-                    for name in _list_dataset_names(datasets, pat, include_migrated=include_migrated):
-                        if name not in expanded_seen:
-                            expanded_seen.add(name)
-                            expanded.append(name)
-
-            if verbose:
-                print(f"  Found {len(expanded)} dataset(s) after sibling expansion", flush=True)
-
-            for name in expanded:
+        siblings: list[str] = []
+        for pat in sibling_patterns:
+            for name in _list_dataset_names(datasets, pat, include_migrated=include_migrated):
                 if name not in seen:
-                    seen.add(name)
-                    discovered.append(name)
+                    siblings.append(name)
+        _add(siblings, "Sibling expansion")
+
+        if discovered:
             return discovered
 
-        if verbose:
-            print("  D SMF,O returned no datasets, falling back to catalog search.", flush=True)
+        if sources_out is not None:
+            sources_out["D SMF,O + PARMLIB"] = sources_out.get("D SMF,O + PARMLIB", [])
 
-    # --- Fallback: catalog search by pattern ---
+    # --- Source 5: catalog pattern search (fallback or explicit patterns) ---
     selected_patterns = tuple(patterns) if patterns is not None else DEFAULT_SMF_DATASET_PATTERNS
-
-    if verbose:
-        print(f"Searching catalog patterns: {', '.join(selected_patterns)}", flush=True)
-
+    catalog_hits: list[str] = []
     for pattern in selected_patterns:
-        names = _list_dataset_names(datasets, pattern, include_migrated=include_migrated)
-        if verbose:
-            print(f"  {pattern}: {len(names)} result(s)", flush=True)
-        for name in names:
-            if name not in seen:
-                seen.add(name)
-                discovered.append(name)
+        catalog_hits.extend(
+            _list_dataset_names(datasets, pattern, include_migrated=include_migrated)
+        )
+    _add(catalog_hits, f"Catalog patterns ({', '.join(selected_patterns)})")
 
     return discovered
 

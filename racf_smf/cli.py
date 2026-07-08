@@ -169,12 +169,27 @@ def main() -> int:
     scanned_types: Counter[int] = Counter()
 
     if use_discovery:
-        discovered = discover_smf_datasets(args.dataset_patterns or None, verbose=True)
+        sources: dict[str, list[str]] = {}
+        discovered = discover_smf_datasets(
+            args.dataset_patterns or None, verbose=False, sources_out=sources
+        )
+
+        # Print source summary to stderr.
+        print(_bold("Discovery sources:"), file=sys.stderr)
+        for label, names in sources.items():
+            if names:
+                marker = _colored("✔", _C.GREEN)
+                detail = _colored(f"{len(names)} dataset(s)", _C.GREEN)
+            else:
+                marker = _colored("✘", _C.DIM)
+                detail = _dim("none")
+            print(f"  {marker} {label:<30} {detail}", file=sys.stderr)
+
         if not discovered:
             _err("No SMF datasets found. Try --list-datasets with --dataset-pattern to diagnose.")
             raise SystemExit(1)
         if args.list_datasets:
-            _ok(f"\nFound {len(discovered)} dataset(s):")
+            print(_bold(f"\nFound {len(discovered)} dataset(s):"), file=sys.stderr)
             for ds in discovered:
                 print(f"  {_bold(ds)}", file=sys.stderr)
             return 0
