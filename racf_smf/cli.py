@@ -182,7 +182,24 @@ def main() -> int:
         # Print source summary to stderr.
         sear_ok, sear_err = _sear_import_status()
         print(_bold("Discovery sources:"), file=sys.stderr)
-        for label, names in sources.items():
+
+        preferred_order = [
+            "D SMF,O + PARMLIB",
+            "D SMF,D",
+            "D PARMLIB (full concat)",
+            "D IPLINFO",
+            "D LOGGER",
+            "zsystem.search_parmlib",
+            "zsystem.list_parmlib",
+            "pySEAR",
+            "Sibling expansion",
+        ]
+
+        ordered_labels: list[str] = [label for label in preferred_order if label in sources]
+        ordered_labels.extend(label for label in sources if label not in ordered_labels)
+
+        for label in ordered_labels:
+            names = sources.get(label, [])
             suffix = ""
             if label == "pySEAR":
                 if sear_ok:
