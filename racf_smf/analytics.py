@@ -292,6 +292,237 @@ def _query_zsystem_parmlib_search(verbose: bool = False) -> list[str]:
     return candidates
 
 
+# ─── D PARMLIB — full PARMLIB concatenation ───────────────────────────────────
+
+
+def _query_parmlib_concat(verbose: bool = False) -> list[str]:
+    """Issue 'D PARMLIB' and return the ordered list of active PARMLIB dataset names.
+
+    IEE250I prints one line per dataset in the concatenation:
+      <volume>  <dataset.name>
+    """
+    output = _opercmd_output("D PARMLIB", verbose=verbose)
+    if not output:
+        return []
+    dsns: list[str] = []
+    seen_set: set[str] = set()
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            candidate = parts[-1].upper().rstrip(".")
+            if (
+                _re.match(r"^[A-Z#@$][A-Z0-9#@$]{0,7}(\.[A-Z0-9#@$]{1,8})+$", candidate)
+                and candidate not in seen_set
+            ):
+                seen_set.add(candidate)
+                dsns.append(candidate)
+    if verbose:
+        print(f"  D PARMLIB found {len(dsns)} PARMLIB dataset(s)", flush=True)
+    return dsns
+
+
+def _read_smfprm_from_parmlibs(
+    parmlib_dsns: list[str],
+    member: str,
+    sysname: str | None,
+) -> list[str]:
+    """Read one SMFPRMxx member from every PARMLIB dataset; return merged DSNAME/LOGSTREAM names."""
+    try:
+        from zoautil_py import datasets  # type: ignore[import-not-found]
+    except ImportError:
+        return []
+    results: list[str] = []
+    seen: set[str] = set()
+    for dsn in parmlib_dsns:
+        try:
+            content = datasets.read(f"{dsn}({member})")
+            if not content:
+                continue
+            for n in _resolve_smf_variables(_parse_dsnames_from_output(content), sysname):
+                if n not in seen:
+                    seen.add(n)
+                    results.append(n)
+            ls_m = _LOGSTREAM_RE.search(content)
+            if ls_m:
+                for ls in ls_m.group(1).replace("\n", ",").split(","):
+                    ls = ls.strip()
+                    if ls and ls not in seen:
+                        seen.add(ls)
+                        results.append(ls)
+        except Exception:  # noqa: BLE001
+            continue
+    return results
+
+
+def _query_full_parmlib_smfprm(sysname: str | None, verbose: bool = False) -> list[str]:
+    """
+    Extend SMFPRMxx reading to every dataset in the active PARMLIB concatenation.
+
+    Source 1 only reads SYS1.PARMLIB.  Many sites prepend a site-specific
+    PARMLIB dataset that contains the live SMFPRMxx member.  This source
+    re-issues D PARMLIB and tries the active member (from D SMF,O) plus
+    SMFPRM00 across every concatenated dataset.
+    """
+    parmlib_dsns = _query_parmlib_concat(verbose=verbose)
+    if not parmlib_dsns:
+        return []
+
+    active_member: str | None = None
+    smfo = _opercmd_output("D SMF,O")
+    if smfo:
+        m = _MEMBER_RE.search(smfo)
+        if m:
+            active_member = f"SMFPRM{m.group(1).upper()}"
+
+    members_to_try: list[str] = []
+    if active_member:
+        members_to_try.append(active_member)
+    if "SMFPRM00" not in members_to_try:
+        members_to_try.append("SMFPRM00")
+
+    results: list[str] = []
+    seen: set[str] = set()
+    for member in members_to_try:
+        for n in _read_smfprm_from_parmlibs(parmlib_dsns, member, sysname):
+            if n not in seen:
+                seen.add(n)
+                results.append(n)
+
+    if verbose and results:
+        print(f"  Full PARMLIB concat search found {len(results)} additional dataset(s)", flush=True)
+    return results
+
+
+# ─── D IPLINFO ────────────────────────────────────────────────────────────────
+
+
+def _query_iplinfo_smfprm(sysname: str | None, verbose: bool = False) -> list[str]:
+    """
+    Issue 'D IPLINFO', locate the SMFPRM suffix via IEASYS, and read the
+    corresponding SMFPRMxx member from every PARMLIB dataset.
+
+    Some z/OS levels print SMFPRM=xx directly in D IPLINFO output.
+    Otherwise each IEASYSxx member listed in IEASYS LIST is read and
+    searched for SMFPRM= to derive the correct suffix.
+    """
+    output = _opercmd_output("D IPLINFO", verbose=verbose)
+    if not output:
+        return []
+
+    parmlib_dsns = _query_parmlib_concat()
+
+    direct = _re.search(r"\bSMFPRM\s*=\s*([0-9A-Z]{1,2})\b", output, _re.IGNORECASE)
+    if direct:
+        member = f"SMFPRM{direct.group(1).upper():0>2}"
+        if verbose:
+            print(f"  D IPLINFO → SMFPRM suffix {direct.group(1).upper()}", flush=True)
+        return _read_smfprm_from_parmlibs(parmlib_dsns, member, sysname)
+
+    ieasys_m = _re.search(r"IEASYS\s+LIST\s*=\s*\(([^)]+)\)", output, _re.IGNORECASE)
+    if not ieasys_m:
+        return []
+
+    try:
+        from zoautil_py import datasets  # type: ignore[import-not-found]
+    except ImportError:
+        return []
+
+    for suffix in ieasys_m.group(1).split(","):
+        suffix = suffix.strip().upper()
+        if not suffix:
+            continue
+        ieasys_member = f"IEASYS{suffix:0>2}"
+        for dsn in parmlib_dsns:
+            try:
+                content = datasets.read(f"{dsn}({ieasys_member})")
+                smfm = _re.search(r"\bSMFPRM\s*=\s*([0-9A-Z]{1,2})\b", content or "", _re.IGNORECASE)
+                if smfm:
+                    member = f"SMFPRM{smfm.group(1).upper():0>2}"
+                    if verbose:
+                        print(f"  {ieasys_member} → SMFPRM suffix {smfm.group(1).upper()}", flush=True)
+                    return _read_smfprm_from_parmlibs(parmlib_dsns, member, sysname)
+            except Exception:  # noqa: BLE001
+                continue
+    return []
+
+
+# ─── zsystem.list_parmlib ─────────────────────────────────────────────────────
+
+
+def _query_zsystem_all_smfprm_members(sysname: str | None, verbose: bool = False) -> list[str]:
+    """
+    Call zsystem.list_parmlib() to enumerate every member in the PARMLIB
+    concatenation, filter for SMFPRM* members, and parse DSNAME entries from each.
+    Uses zsystem.find_parmlib() to locate the containing dataset for each member.
+    """
+    try:
+        from zoautil_py import zsystem, datasets  # type: ignore[import-not-found]
+    except ImportError:
+        return []
+
+    try:
+        raw = zsystem.list_parmlib()
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(f"  zsystem.list_parmlib() failed: {exc}", flush=True)
+        return []
+
+    text = _coerce_text_output(raw) or ""
+    smfprm_members = list({m.upper() for m in _re.findall(r"\bSMFPRM[A-Z0-9]{0,2}\b", text, _re.IGNORECASE)})
+    if verbose:
+        print(f"  zsystem.list_parmlib found {len(smfprm_members)} SMFPRM* member(s)", flush=True)
+
+    results: list[str] = []
+    seen: set[str] = set()
+    for member in smfprm_members:
+        containing_dsn = "SYS1.PARMLIB"
+        try:
+            found_text = _coerce_text_output(zsystem.find_parmlib(member)) or ""
+            dsn_candidate = found_text.strip().split("(")[0].strip()
+            if _re.match(r"^[A-Z#@$][A-Z0-9#@$]{0,7}(\.[A-Z0-9#@$]{1,8})+$", dsn_candidate):
+                containing_dsn = dsn_candidate
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            content = datasets.read(f"{containing_dsn}({member})")
+            if not content:
+                continue
+            for n in _resolve_smf_variables(_parse_dsnames_from_output(content), sysname):
+                if n not in seen:
+                    seen.add(n)
+                    results.append(n)
+        except Exception:  # noqa: BLE001
+            continue
+
+    return results
+
+
+# ─── D LOGGER ─────────────────────────────────────────────────────────────────
+
+_LOGGER_TOKEN_RE = _re.compile(r"\b([A-Z#@$][A-Z0-9#@$]{0,7}(?:\.[A-Z0-9#@$]{1,8}){1,21})\b")
+_SMF_IN_TOKEN_RE = _re.compile(r"(?:^|\.)SMF(?:\.|$|[0-9A-Z])", _re.IGNORECASE)
+
+
+def _query_smf_logstreams(verbose: bool = False) -> list[str]:
+    """
+    Issue 'D LOGGER,L' and return logstream names that contain 'SMF'.
+    Logstreams are added to the discovered list alongside datasets; ZOAU
+    can transparently read DASD-bridged logstreams via datasets.read_as_bytes.
+    """
+    output = _opercmd_output("D LOGGER,L", verbose=verbose)
+    if not output:
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    for name in _LOGGER_TOKEN_RE.findall(output):
+        if _SMF_IN_TOKEN_RE.search(name) and name not in seen:
+            seen.add(name)
+            found.append(name)
+    if verbose:
+        print(f"  D LOGGER,L found {len(found)} SMF logstream candidate(s)", flush=True)
+    return found
+
+
 def _query_logstream_names(output: str) -> list[str]:
     """Extract logstream names from a LOGSTREAM(...) block in operator output."""
     match = _LOGSTREAM_RE.search(output)
@@ -374,12 +605,16 @@ def discover_smf_datasets(
     Discover active SMF datasets.
 
     Strategy (in order):
-    1. D SMF,O  — active write-target dataset(s) + PARMLIB member for all configured names.
-    2. D SMF,D  — all dataset statuses (ACTIVE, ALTERNATE, FULL, EMPTY).
-    3. pySEAR   — RACF dataset profiles whose names contain MAN or SMF.
-    4. zsystem.search_parmlib — scan active parmlib concatenation for DSNAME/LOGSTREAM tokens.
-    5. Sibling expansion — catalog wildcard derived from any name found above.
-    6. Catalog patterns  — explicit or default patterns when all else fails.
+    1.  D SMF,O  — active write-target dataset(s) + PARMLIB member for all configured names.
+    2.  D SMF,D  — all dataset statuses (ACTIVE, ALTERNATE, FULL, EMPTY).
+    3.  pySEAR   — RACF dataset profiles whose names contain MAN or SMF.
+    4.  zsystem.search_parmlib — scan active parmlib concatenation for DSNAME/LOGSTREAM tokens.
+    5.  D PARMLIB — read active SMFPRMxx from every PARMLIB dataset in the concatenation.
+    6.  D IPLINFO — locate SMFPRM suffix via IEASYSxx when D SMF,O does not report it.
+    7.  zsystem.list_parmlib — enumerate all SMFPRM* members across the concatenation.
+    8.  D LOGGER  — discover SMF logstreams for sites using logstream-based SMF recording.
+    9.  Sibling expansion — catalog wildcard derived from any name found above.
+    10. Catalog patterns  — explicit or default patterns when all else fails.
 
     If ``sources_out`` is provided it is populated with a mapping of
     source label → list of dataset names that source contributed.
@@ -410,6 +645,16 @@ def discover_smf_datasets(
             sources_out[label] = added
         return added
 
+    # Pre-compute system name for &SYSNAME substitution; shared across all sources.
+    _sysname: str | None = None
+    try:
+        _node = _re.sub(r"[^A-Z0-9#@$]", "", os.uname().nodename.upper())  # type: ignore[attr-defined]
+        _sysname = _node or None
+    except AttributeError:
+        pass
+    if not _sysname:
+        _sysname = (os.environ.get("SYSNAME") or os.environ.get("_BPXK_SYSNAME") or "").upper() or None
+
     # --- Source 1: D SMF,O + active PARMLIB member ---
     if patterns is None:
         live = _query_active_smf_datasets(verbose=verbose)
@@ -430,7 +675,23 @@ def discover_smf_datasets(
         zsys_names = _query_zsystem_parmlib_search(verbose=verbose)
         _add(zsys_names, "zsystem.search_parmlib")
 
-        # --- Source 5: sibling expansion via catalog search ---
+        # --- Source 5: full PARMLIB concatenation SMFPRMxx search ---
+        parmlib_names = _query_full_parmlib_smfprm(_sysname, verbose=verbose)
+        _add(parmlib_names, "D PARMLIB (full concat)")
+
+        # --- Source 6: D IPLINFO → SMFPRM suffix via IEASYSxx ---
+        iplinfo_names = _query_iplinfo_smfprm(_sysname, verbose=verbose)
+        _add(iplinfo_names, "D IPLINFO")
+
+        # --- Source 7: zsystem.list_parmlib SMFPRM* members ---
+        zlist_names = _query_zsystem_all_smfprm_members(_sysname, verbose=verbose)
+        _add(zlist_names, "zsystem.list_parmlib")
+
+        # --- Source 8: D LOGGER SMF logstreams ---
+        logstream_names = _query_smf_logstreams(verbose=verbose)
+        _add(logstream_names, "D LOGGER")
+
+        # --- Source 9: sibling expansion via catalog search ---
         sibling_patterns: list[str] = []
         for name in list(seen):
             pat = _derive_sibling_pattern(name)
@@ -450,7 +711,7 @@ def discover_smf_datasets(
         if sources_out is not None:
             sources_out["D SMF,O + PARMLIB"] = sources_out.get("D SMF,O + PARMLIB", [])
 
-    # --- Source 6: catalog pattern search (fallback or explicit patterns) ---
+    # --- Source 10: catalog pattern search (fallback or explicit patterns) ---
     selected_patterns = tuple(patterns) if patterns is not None else DEFAULT_SMF_DATASET_PATTERNS
     catalog_hits: list[str] = []
     for pattern in selected_patterns:
