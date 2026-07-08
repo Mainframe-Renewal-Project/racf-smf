@@ -51,7 +51,7 @@ def _derive_sibling_broad_pattern(dataset_name: str) -> str | None:
     """
     Full-qualifier wildcard for the parent prefix, used as a fallback when ZOAU
     does not support within-qualifier wildcards.
-    e.g. SYS1.YCPU.MAN03 -> SYS1.YCPU.*  (caller filters with _MAN_SMF_RE)
+    e.g. USER.SMF.MAN03 -> USER.SMF.*  (caller filters with _MAN_SMF_RE)
     """
     parts = dataset_name.upper().split(".")
     last = parts[-1]

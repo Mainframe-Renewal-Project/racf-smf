@@ -101,81 +101,145 @@ def _is_dataset_source(value: str) -> bool:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="racf-smf",
-        description="Fetch RACF and z/OS UNIX security SMF records from a binary SMF file.",
+        formatter_class=argparse.RawTextHelpFormatter,
+        description=(
+            "Read, discover, and summarize RACF and z/OS UNIX security SMF records.\n\n"
+            "The input can be a local binary file, a z/OS MAN dataset, or an auto-discovered\n"
+            "set of SMF datasets found through operator commands, PARMLIB inspection, ZOAU,\n"
+            "and optional pySEAR lookups."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  racf-smf /tmp/smf.bin --format rdw\n"
+            "      Read a local VB/RDW-wrapped SMF extract.\n\n"
+            "  racf-smf USER.SMF.MAN1 --dataset-input --format man\n"
+            "      Read a MAN dataset by name.\n\n"
+            "  racf-smf --discover --summary-only\n"
+            "      Auto-discover datasets, scan them, and print only summaries.\n\n"
+            "  racf-smf --discover --dedup-events --json-out events.jsonl\n"
+            "      Auto-discover datasets and write deduplicated JSON lines to a file."
+        ),
     )
     parser.add_argument(
         "input",
         nargs="?",
-        help="Path to SMF binary data or plain z/OS dataset name when --dataset-input is set. Omit to auto-discover datasets via ZOAU.",
+        help=(
+            "Input source to read. Use a local file path for exported SMF data, or a plain z/OS "
+            "dataset name when --dataset-input is set. Omit this argument to enable automatic "
+            "discovery via ZOAU/operator-command sources."
+        ),
     )
     parser.add_argument(
         "--dataset-input",
         action="store_true",
-        help="Treat input as a z/OS dataset name (for example SMFDATA.MAN01)",
+        help=(
+            "Treat the positional input as a z/OS dataset name instead of a local file path. "
+            "Use this for names such as USER.SMF.MAN1 or SITE.SMF.DATA.MANX."
+        ),
     )
     parser.add_argument(
         "--discover",
         action="store_true",
-        help="Auto-discover SMF datasets using ZOAU and process all of them",
+        help=(
+            "Auto-discover SMF datasets and scan all discovered inputs. Discovery uses operator "
+            "commands, PARMLIB inspection, zsystem helpers, optional pySEAR queries, and catalog "
+            "fallback patterns."
+        ),
     )
     parser.add_argument(
         "--dataset-pattern",
         action="append",
         dest="dataset_patterns",
         metavar="PATTERN",
-        help="Dataset name pattern for discovery (repeatable). Overrides auto-discovery from D SMF,O.",
+        help=(
+            "Dataset name pattern to use during discovery, for example USER.*.MAN* or SITE.SMF.DATA.*. "
+            "This option is repeatable. Supplying one or more patterns bypasses live-source discovery "
+            "and uses the provided catalog search patterns instead."
+        ),
     )
     parser.add_argument(
         "--list-datasets",
         action="store_true",
-        help="Print discovered SMF datasets and exit (useful for diagnosing pattern issues)",
+        help=(
+            "Print the discovered inputs and exit without parsing records. Useful for diagnosing "
+            "discovery behavior or verifying that custom dataset patterns match the expected names."
+        ),
     )
     parser.add_argument(
         "--include-logstreams",
         action="store_true",
-        help="Include D LOGGER-discovered logstream names in scan input instead of discovery summary only",
+        help=(
+            "Include D LOGGER-discovered logstream names in the scan input instead of only showing them "
+            "in the discovery summary. Leave this off unless your site exposes SMF logstreams in a way "
+            "that the current reader can consume successfully."
+        ),
     )
     parser.add_argument(
         "--format",
         choices=("auto", "rdw", "smf", "man"),
         default="auto",
-        help="Input framing format: MAN (BDW/VBS), RDW (VB), raw SMF, or auto-detect",
+        help=(
+            "Record framing format. 'auto' tries to detect the layout. 'rdw' expects classic VB/RDW-"
+            "wrapped records. 'smf' expects raw SMF records with no RDW/BDW framing. 'man' expects a "
+            "MAN dataset style stream with BDW/VBS segmentation."
+        ),
     )
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Include all SMF records instead of only security records",
+        help=(
+            "Emit every parsed SMF record instead of only security-related records. This is useful when "
+            "checking whether parsing works but the security filter finds nothing."
+        ),
     )
     parser.add_argument(
         "--zos-unix-subtypes",
         default="2,3,4",
-        help="Comma-separated type 83 subtypes considered z/OS UNIX security records",
+        help=(
+            "Comma-separated SMF type 83 subtypes to treat as z/OS UNIX security records. The default "
+            "is 2,3,4, which covers the common UNIX security event subtypes."
+        ),
     )
     parser.add_argument(
         "--strict-man",
         action="store_true",
-        help="Fail fast on malformed BDW/RDW segments when using MAN format",
+        help=(
+            "Fail immediately when malformed BDW/RDW segments are encountered while parsing MAN-format "
+            "data. Without this flag, the parser is more tolerant of damaged or irregular input."
+        ),
     )
     parser.add_argument(
         "--max-records",
         type=int,
         default=0,
-        help="Stop after N emitted records (0 means no limit)",
+        help=(
+            "Stop after emitting N records. The limit applies to emitted output after filtering and "
+            "optional deduplication. Use 0 for no limit."
+        ),
     )
     parser.add_argument(
         "--json-out",
         type=Path,
-        help="Optional output file for JSON lines (one record per line)",
+        help=(
+            "Write JSON Lines output to a file instead of stdout. Each emitted event is written as one "
+            "compact JSON object per line."
+        ),
     )
     parser.add_argument(
         "--dedup-events",
         action="store_true",
-        help="Suppress duplicate emitted events by source, offset, and total length",
+        help=(
+            "Suppress duplicate emitted events using the tuple (source, offset, total_length). This is "
+            "useful when multiple discovery paths or overlapping inputs expose the same SMF record."
+        ),
     )
     parser.add_argument(
         "--summary-only",
         action="store_true",
-        help="Do not emit JSON events; print discovery and record-count summaries only",
+        help=(
+            "Do not emit per-record JSON. Only print discovery output and end-of-run counts such as "
+            "records scanned, records emitted, and tag/type summaries."
+        ),
     )
     return parser
 

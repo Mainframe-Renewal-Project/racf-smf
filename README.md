@@ -67,7 +67,7 @@ racf-smf path\to\SYS1.MAN01.bin --format man --json-out security_records.jsonl
 Read directly from an MVS dataset using ZOAU (USS on z/OS):
 
 ```sh
-racf-smf SYS1.MANX --dataset-input --json-out /u/you/security_records.jsonl
+racf-smf USER.SMF.MAN1 --dataset-input --json-out /u/you/security_records.jsonl
 ```
 
 Read a specific generation dataset:
@@ -148,7 +148,7 @@ For dataset input in Python APIs, set `dataset_input=True`:
 ```python
 from racf_smf import iter_security_events
 
-for event in iter_security_events("SYS1.MANX", dataset_input=True):
+for event in iter_security_events("USER.SMF.MAN1", dataset_input=True):
   process(event)
 ```
 
