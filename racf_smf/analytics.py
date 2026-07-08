@@ -53,21 +53,32 @@ def _opercmd_output(command: str, verbose: bool = False) -> str | None:
         return None
 
 
-def _sear_available() -> bool:
-    """Return True if the pySEAR package is importable.
+def _sear_import_status() -> tuple[bool, str | None]:
+    """
+    Return (available, error_message).
 
-    The PyPI distribution is named ``pysear`` but the importable top-level
-    package is ``sear``.  We catch both ImportError and any other exception
-    that can arise from a broken or partially installed package.
+    - (True,  None)  : sear imports cleanly.
+    - (False, None)  : sear/pysear package is not installed.
+    - (False, <msg>) : package is installed but the import failed (e.g. the
+                       native libsear.so could not be loaded due to missing
+                       Language Environment PTFs or RACF authorizations).
     """
     for module_name in ("sear", "pysear"):
         try:
             import importlib
             importlib.import_module(module_name)
-            return True
-        except Exception:  # noqa: BLE001
-            continue
-    return False
+            return True, None
+        except ModuleNotFoundError:
+            continue          # module genuinely absent — try next name
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)  # installed but broken
+    return False, None
+
+
+def _sear_available() -> bool:
+    """Return True if the pySEAR package is importable."""
+    ok, _ = _sear_import_status()
+    return ok
 
 
 def _query_sear_smf_dataset_profiles(
@@ -87,13 +98,15 @@ def _query_sear_smf_dataset_profiles(
     """
     try:
         from sear import sear  # type: ignore[import-not-found]
-    except ImportError:
+    except ModuleNotFoundError:
         try:
             from pysear import sear  # type: ignore[import-not-found]
-        except ImportError:
+        except ModuleNotFoundError:
             return []
-    except Exception:  # noqa: BLE001
-        return []
+        except Exception:
+            return []  # installed but native library unavailable
+    except Exception:
+        return []  # installed but native library unavailable
 
     _MAN_SUFFIX_RE = _re.compile(r"\.MAN[A-Z0-9]*$", _re.IGNORECASE)
 

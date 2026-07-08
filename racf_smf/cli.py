@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 
 from .analytics import (
-    _sear_available,
+    _sear_import_status,
     discover_smf_datasets,
     iter_discovered_security_events,
     iter_security_events,
@@ -180,12 +180,17 @@ def main() -> int:
         )
 
         # Print source summary to stderr.
-        sear_installed = _sear_available()
+        sear_ok, sear_err = _sear_import_status()
         print(_bold("Discovery sources:"), file=sys.stderr)
         for label, names in sources.items():
             suffix = ""
             if label == "pySEAR":
-                suffix = _dim(f"  ({'installed' if sear_installed else 'not installed'})")
+                if sear_ok:
+                    suffix = _dim("  (installed)")
+                elif sear_err:
+                    suffix = _colored(f"  (installed - import error: {sear_err[:80]})", _C.YELLOW)
+                else:
+                    suffix = _dim("  (not installed)")
             if names:
                 marker = _colored("✔", _C.GREEN)
                 detail = _colored(f"{len(names)} dataset(s)", _C.GREEN)
