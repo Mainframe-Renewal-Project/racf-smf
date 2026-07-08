@@ -23,6 +23,8 @@ _CATALOG_RECURSIVE_WILDCARD_DEPTH = 8
 _DSN_FIRST_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ#@$")
 _DSN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@$")
 _DSN_TOKEN_CHARS = _DSN_CHARS | frozenset(".")
+_USER_ID_FIRST_CHARS = _DSN_FIRST_CHARS
+_USER_ID_CHARS = _DSN_CHARS
 
 
 def _is_valid_dsn(name: str) -> bool:
@@ -37,6 +39,42 @@ def _is_valid_dsn(name: str) -> bool:
         and all(char in _DSN_CHARS for char in qualifier)
         for qualifier in qualifiers
     )
+
+
+def _normalize_user_identifier(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().upper()
+    if not cleaned or len(cleaned) > 8:
+        return None
+    if cleaned[0] not in _USER_ID_FIRST_CHARS:
+        return None
+    if any(char not in _USER_ID_CHARS for char in cleaned):
+        return None
+    return cleaned
+
+
+def _event_non_user_identifiers(event: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    for key in (
+        "system_id",
+        "group_name",
+        "terminal_id",
+        "job_name",
+        "class_name",
+        "resource_name",
+        "profile_name",
+        "product_name",
+        "product_version",
+    ):
+        normalized = _normalize_user_identifier(event.get(key))
+        if normalized:
+            values.add(normalized)
+    for value in event.get("resource_candidates", ()):
+        normalized = _normalize_user_identifier(value)
+        if normalized:
+            values.add(normalized)
+    return values
 
 
 def _has_man_or_smf_qualifier(name: str) -> bool:
@@ -998,15 +1036,25 @@ def record_to_event(record: SmfRecord, *, source: str | None = None) -> dict[str
 def event_user_ids(event: dict[str, Any]) -> tuple[str, ...]:
     """Return all decoded user identifiers associated with an event."""
 
-    users = {
-        event.get("user_id"),
-        event.get("smf_user_id"),
-        event.get("address_space_user_id"),
-        event.get("authenticated_user_name"),
-        event.get("distributed_identity_user_name"),
-        *event.get("user_id_candidates", ()),
-    }
-    return tuple(sorted({str(user).upper() for user in users if user}))
+    users: set[str] = set()
+    for key in (
+        "user_id",
+        "smf_user_id",
+        "address_space_user_id",
+        "authenticated_user_name",
+        "distributed_identity_user_name",
+    ):
+        normalized = _normalize_user_identifier(event.get(key))
+        if normalized:
+            users.add(normalized)
+
+    non_users = _event_non_user_identifiers(event)
+    for candidate in event.get("user_id_candidates", ()):
+        normalized = _normalize_user_identifier(candidate)
+        if normalized and normalized not in non_users:
+            users.add(normalized)
+
+    return tuple(sorted(users))
 
 
 def event_action_label(event: dict[str, Any]) -> str:
