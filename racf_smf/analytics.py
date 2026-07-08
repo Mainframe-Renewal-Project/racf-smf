@@ -108,7 +108,7 @@ def _query_sear_smf_dataset_profiles(
     except Exception:
         return []  # installed but native library unavailable
 
-    _MAN_SUFFIX_RE = _re.compile(r"\.MAN[A-Z0-9]*$", _re.IGNORECASE)
+    _MAN_SMF_SUFFIX_RE = _re.compile(r"\.(MAN|SMF)[A-Z0-9]*$", _re.IGNORECASE)
 
     candidates: list[str] = []
     seen_profiles: set[str] = set()
@@ -131,7 +131,7 @@ def _query_sear_smf_dataset_profiles(
             if isinstance(p, str) and p not in seen_profiles:
                 seen_profiles.add(p)
                 # Keep only non-generic profiles whose last qualifier looks like MAN*.
-                if "*" not in p and "%" not in p and _MAN_SUFFIX_RE.search(p):
+                if "%" not in p and "*" not in p and _MAN_SMF_SUFFIX_RE.search(p):
                     candidates.append(p)
 
     if verbose:
