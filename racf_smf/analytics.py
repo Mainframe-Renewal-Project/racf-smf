@@ -43,10 +43,10 @@ def _build_default_patterns() -> tuple[str, ...]:
 
 def _list_dataset_names(datasets_module, pattern: str, *, include_migrated: bool) -> list[str]:
     try:
-        return datasets.list_dataset_names(pattern, migrated=include_migrated) or []
+        return datasets_module.list_dataset_names(pattern, migrated=include_migrated) or []
     except TypeError:
         # Older ZOAU levels may not support the migrated keyword.
-        return datasets.list_dataset_names(pattern) or []
+        return datasets_module.list_dataset_names(pattern) or []
 
 
 def discover_smf_datasets(
