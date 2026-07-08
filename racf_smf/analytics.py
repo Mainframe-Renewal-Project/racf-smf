@@ -249,7 +249,7 @@ def _query_zsystem_parmlib_search(verbose: bool = False) -> list[str]:
     Use zsystem.search_parmlib as a broad fallback to find SMF-related
     dataset names in the active parmlib concatenation.
 
-    This searches for DSNAME( and LOGSTREAM( tokens across parmlib members,
+    This searches for DSNAME and LOGSTREAM tokens across parmlib members,
     then resolves any literal &SYSNAME variables using the live system name.
     """
     try:
@@ -267,7 +267,7 @@ def _query_zsystem_parmlib_search(verbose: bool = False) -> list[str]:
         sysname = (os.environ.get("SYSNAME") or os.environ.get("_BPXK_SYSNAME") or "").upper() or None
 
     candidates: list[str] = []
-    for needle in ("DSNAME(", "LOGSTREAM("):
+    for needle in ("DSNAME", "LOGSTREAM"):
         try:
             output = zsystem.search_parmlib(needle, ignore_case=True, display_lines=True)
         except Exception as exc:  # noqa: BLE001
