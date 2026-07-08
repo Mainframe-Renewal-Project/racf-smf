@@ -31,35 +31,103 @@ def _derive_sibling_pattern(dataset_name: str) -> str | None:
     return None
 
 
-def _query_active_smf_datasets(verbose: bool = False) -> list[str]:
-    """
-    Issue 'D SMF,O' via ZOAU opercmd and parse active DSNAME entries.
+_MEMBER_RE = _re.compile(r"MEMBER\s*=\s*(\w+)", _re.IGNORECASE)
+_PARMLIB_RE = _re.compile(r"PARMLIB\s*=\s*(\S+)", _re.IGNORECASE)
 
-    This is naming-convention-agnostic: whatever datasets SMF is actually
-    writing to will be returned regardless of HLQ or site standards.
-    Returns an empty list if opercmd is unavailable or output cannot be parsed.
-    """
+
+def _opercmd_output(command: str, verbose: bool = False) -> str | None:
+    """Issue an operator command via ZOAU and return stdout, or None on failure."""
     try:
         from zoautil_py import opercmd  # type: ignore[import-not-found]
     except ImportError:
-        return []
-
+        return None
     try:
-        result = opercmd.execute("D SMF,O")
-        output = getattr(result, "stdout", None) or str(result)
+        result = opercmd.execute(command)
+        return getattr(result, "stdout", None) or str(result)
     except Exception as exc:  # noqa: BLE001
         if verbose:
-            print(f"  opercmd 'D SMF,O' failed: {exc}", flush=True)
-        return []
+            print(f"  opercmd '{command}' failed: {exc}", flush=True)
+        return None
 
+
+def _parse_dsnames_from_output(output: str) -> list[str]:
+    """Extract all dataset names from a DSNAME(...) block in operator command output."""
     match = _DSNAME_BLOCK_RE.search(output)
     if not match:
-        if verbose:
-            print("  Could not parse DSNAME block from 'D SMF,O' output.", flush=True)
+        return []
+    raw = match.group(1)
+    return [n.strip() for n in raw.replace("\n", ",").split(",") if n.strip()]
+
+
+def _query_smf_d_datasets(verbose: bool = False) -> list[str]:
+    """
+    Issue 'D SMF,D' and parse all MAN dataset names from the status listing.
+    D SMF,D reports ALL configured datasets (ACTIVE, ALTERNATE, FULL, EMPTY),
+    not just the current write target, making it more complete than D SMF,O.
+    """
+    output = _opercmd_output("D SMF,D", verbose=verbose)
+    if not output:
+        return []
+    names = _parse_dsnames_from_output(output)
+    if not names:
+        # D SMF,D may format each dataset on its own line without a block.
+        # Extract any token that looks like a multi-qualifier dataset name.
+        names = _re.findall(r"\b([A-Z#@$][A-Z0-9#@$]{0,7}(?:\.[A-Z0-9#@$]{1,8}){1,21})\b", output)
+    return names
+
+
+def _query_parmlib_datasets(smfprm_member: str, verbose: bool = False) -> list[str]:
+    """
+    Read a SMFPRMxx PARMLIB member and parse the DSNAME block.
+    The PARMLIB member contains ALL configured MAN datasets regardless of
+    their current SMF status.
+    """
+    try:
+        from zoautil_py import datasets  # type: ignore[import-not-found]
+    except ImportError:
         return []
 
-    raw = match.group(1)
-    names = [n.strip() for n in raw.replace("\n", ",").split(",") if n.strip()]
+    # Try common PARMLIB dataset names; ZOAU list_dataset_names can locate the active one.
+    for parmlib_dsn in (f"SYS1.PARMLIB({smfprm_member})",):
+        try:
+            content = datasets.read(parmlib_dsn)
+            names = _parse_dsnames_from_output(content)
+            if names:
+                if verbose:
+                    print(f"  Read {len(names)} dataset(s) from PARMLIB member {smfprm_member}", flush=True)
+                return names
+        except Exception:  # noqa: BLE001
+            continue
+    return []
+
+
+def _query_active_smf_datasets(verbose: bool = False) -> list[str]:
+    """
+    Issue 'D SMF,O' via ZOAU opercmd and parse active DSNAME entries.
+    Also extracts the active SMFPRMxx member name so the PARMLIB member
+    can be read to obtain the full set of configured datasets.
+    Returns an empty list if opercmd is unavailable or output cannot be parsed.
+    """
+    output = _opercmd_output("D SMF,O", verbose=verbose)
+    if not output:
+        return []
+
+    names = _parse_dsnames_from_output(output)
+
+    # Extract the active PARMLIB member name (MEMBER=xx) from D SMF,O output
+    # and read it to get the complete DSNAME list.
+    member_match = _MEMBER_RE.search(output)
+    if member_match:
+        member = f"SMFPRM{member_match.group(1).upper()}"
+        if verbose:
+            print(f"  Active PARMLIB member: {member}", flush=True)
+        parmlib_names = _query_parmlib_datasets(member, verbose=verbose)
+        seen = set(names)
+        for name in parmlib_names:
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+
     return names
 
 
@@ -98,11 +166,24 @@ def discover_smf_datasets(
     discovered: list[str] = []
     seen: set[str] = set()
 
-    # --- Primary: read active datasets directly from D SMF,O ---
+    # --- Primary: read active datasets directly from D SMF,O + PARMLIB ---
     if patterns is None:
         if verbose:
             print("Querying active SMF datasets via 'D SMF,O'...", flush=True)
         live = _query_active_smf_datasets(verbose=verbose)
+
+        # --- Secondary: D SMF,D for full dataset status listing ---
+        if verbose:
+            print("Querying all SMF dataset statuses via 'D SMF,D'...", flush=True)
+        smfd_names = _query_smf_d_datasets(verbose=verbose)
+        live_seen = set(live)
+        for name in smfd_names:
+            if name not in live_seen:
+                live_seen.add(name)
+                live.append(name)
+        if verbose and smfd_names:
+            print(f"  D SMF,D added {len(smfd_names)} additional dataset(s)", flush=True)
+
         if live:
             # D SMF,O returns only the currently-active (write target) dataset(s).
             # Expand each to its full sibling set via catalog search so historical
