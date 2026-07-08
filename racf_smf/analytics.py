@@ -140,13 +140,35 @@ def _query_sear_smf_dataset_profiles(
     return candidates if candidates else []
 
 
-def _parse_dsnames_from_output(output: str) -> list[str]:
+def _parse_dsnames_from_output(output: str | None) -> list[str]:
     """Extract all dataset names from a DSNAME(...) block in operator command output."""
+    if not output:
+        return []
     match = _DSNAME_BLOCK_RE.search(output)
     if not match:
         return []
     raw = match.group(1)
     return [n.strip() for n in raw.replace("\n", ",").split(",") if n.strip()]
+
+
+def _coerce_text_output(value: Any) -> str | None:
+    """Normalize command-style return values into text for downstream parsing."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    if isinstance(value, (list, tuple, set)):
+        parts = [str(item) for item in value if item is not None]
+        return "\n".join(parts) if parts else None
+    for attr in ("stdout", "output", "text", "result"):
+        data = getattr(value, attr, None)
+        if data:
+            coerced = _coerce_text_output(data)
+            if coerced:
+                return coerced
+    return str(value) if value else None
 
 
 def _query_smf_d_datasets(verbose: bool = False) -> list[str]:
@@ -253,9 +275,10 @@ def _query_zsystem_parmlib_search(verbose: bool = False) -> list[str]:
                 print(f"  zsystem.search_parmlib('{needle}') failed: {exc}", flush=True)
             continue
 
-        raw_names = _parse_dsnames_from_output(output)
+        text_output = _coerce_text_output(output)
+        raw_names = _parse_dsnames_from_output(text_output)
         if not raw_names:
-            raw_names = _re.findall(r"\b([A-Z#@$][A-Z0-9#@$]{0,7}(?:\.[A-Z0-9#@$]{1,8}){1,21})\b", output)
+            raw_names = _re.findall(r"\b([A-Z#@$][A-Z0-9#@$]{0,7}(?:\.[A-Z0-9#@$]{1,8}){1,21})\b", text_output or "")
 
         resolved = _resolve_smf_variables(raw_names, sysname)
         for name in resolved:
