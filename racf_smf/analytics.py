@@ -18,6 +18,8 @@ DEFAULT_SMF_DATASET_PATTERNS: tuple[str, ...] = (
 _DSNAME_BLOCK_RE = _re.compile(r"DSNAME\s*\(([^)]+)\)", _re.DOTALL | _re.IGNORECASE)
 # Matches LOGSTREAM(...) entries in SMFPRMxx or D SMF,O output.
 _LOGSTREAM_RE = _re.compile(r"LOGSTREAM\s*\(\s*([^)]+)\)", _re.DOTALL | _re.IGNORECASE)
+# Dataset names that contain MAN or SMF in at least one qualifier.
+_MAN_SMF_RE = _re.compile(r"(?:^|\.)(?:MAN|SMF)[A-Z0-9]*(?:\.|$)", _re.IGNORECASE)
 # Validates a syntactically legal MVS dataset name (each qualifier starts with a letter
 # or national character; digits-only tokens like block addresses are rejected).
 _VALID_DSN_RE = _re.compile(
@@ -42,6 +44,19 @@ def _derive_sibling_pattern(dataset_name: str) -> str | None:
     idx = last.find("MAN")
     if idx >= 0:
         return ".".join(parts[:-1]) + "." + last[:idx] + "MAN*"
+    return None
+
+
+def _derive_sibling_broad_pattern(dataset_name: str) -> str | None:
+    """
+    Full-qualifier wildcard for the parent prefix, used as a fallback when ZOAU
+    does not support within-qualifier wildcards.
+    e.g. SYS1.YCPU.MAN03 -> SYS1.YCPU.*  (caller filters with _MAN_SMF_RE)
+    """
+    parts = dataset_name.upper().split(".")
+    last = parts[-1]
+    if ("MAN" in last or "SMF" in last) and len(parts) > 1:
+        return ".".join(parts[:-1]) + ".*"
     return None
 
 
@@ -119,8 +134,6 @@ def _query_sear_smf_dataset_profiles(
     except Exception:
         return []  # installed but native library unavailable
 
-    _MAN_SMF_RE = _re.compile(r"(^|\.)(?:MAN|SMF)[A-Z0-9]*(\.|$)", _re.IGNORECASE)
-
     candidates: list[str] = []
     seen_profiles: set[str] = set()
 
@@ -152,15 +165,22 @@ def _query_sear_smf_dataset_profiles(
 
 
 def _parse_dsnames_from_output(output: str | None) -> list[str]:
-    """Extract all dataset names from a DSNAME(...) block in operator command output."""
+    """Extract all dataset names from DSNAME(...) blocks in operator command output.
+
+    Uses finditer to capture every DSNAME block (some SMFPRMxx members list one
+    dataset per block).  Non-printable characters introduced by EBCDIC conversion
+    are stripped so encoding artifacts do not silently discard valid dataset names.
+    """
     if not output:
         return []
-    match = _DSNAME_BLOCK_RE.search(output)
-    if not match:
-        return []
-    raw = match.group(1)
-    candidates = [n.strip() for n in raw.replace("\n", ",").split(",") if n.strip()]
-    return [n for n in candidates if _is_valid_dsn(n)]
+    all_names: list[str] = []
+    for match in _DSNAME_BLOCK_RE.finditer(output):
+        raw = match.group(1)
+        for token in raw.replace("\n", ",").split(","):
+            clean = "".join(c for c in token.strip() if c.isprintable()).strip()
+            if clean and _is_valid_dsn(clean):
+                all_names.append(clean)
+    return all_names
 
 
 def _coerce_text_output(value: Any) -> str | None:
@@ -292,7 +312,6 @@ def _query_zsystem_parmlib_search(verbose: bool = False) -> list[str]:
         if not raw_names:
             raw_names = _re.findall(r"\b([A-Z#@$][A-Z0-9#@$]{0,7}(?:\.[A-Z0-9#@$]{1,8}){1,21})\b", text_output or "")
 
-        _MAN_SMF_RE = _re.compile(r"(^|\.)(?:MAN|SMF)[A-Z0-9]*(\.|$)", _re.IGNORECASE)
         resolved = _resolve_smf_variables(raw_names, sysname)
         for name in resolved:
             if _MAN_SMF_RE.search(name) and name not in candidates:
@@ -706,14 +725,16 @@ def discover_smf_datasets(
         # --- Source 9: sibling expansion via catalog search ---
         sibling_patterns: list[str] = []
         for name in list(seen):
-            pat = _derive_sibling_pattern(name)
-            if pat and pat not in sibling_patterns:
-                sibling_patterns.append(pat)
+            # Try both a specific MAN*/SMF* suffix pattern and the broader parent.*
+            # wildcard so expansion works regardless of ZOAU's wildcard support level.
+            for pat in (_derive_sibling_pattern(name), _derive_sibling_broad_pattern(name)):
+                if pat and pat not in sibling_patterns:
+                    sibling_patterns.append(pat)
 
         siblings: list[str] = []
         for pat in sibling_patterns:
             for name in _list_dataset_names(datasets, pat, include_migrated=include_migrated):
-                if name not in seen:
+                if name not in seen and _MAN_SMF_RE.search(name):
                     siblings.append(name)
         _add(siblings, "Sibling expansion")
 
