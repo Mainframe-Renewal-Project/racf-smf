@@ -39,7 +39,7 @@ def _dataset_name_from_source(source: str | Path) -> str | None:
 
 def _read_records_from_dataset(dataset_name: str) -> list[bytes]:
     try:
-        from zoautil_py import datasets
+        from zoautil_py import datasets  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover - depends on z/OS runtime
         raise RuntimeError(
             "ZOAU is required for dataset input. Install zoautil_py or use a local binary file instead."
