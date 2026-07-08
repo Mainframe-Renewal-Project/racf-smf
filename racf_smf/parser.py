@@ -684,7 +684,7 @@ def _decode_type81_layout(payload: bytes, layout: dict[str, int]) -> _DecodedFie
             "SPECIAL_PASSWORD_CHARACTERS", "RESERVED_4", "RESERVED_5", "RESERVED_6", "RESERVED_7",
         )),
         "mls_options2": _decode_bit_options(mls_options2, ("MLFSOBJ", "MLIPCOBJ", "MLNAMES", "SECLBYSYSTEM", "RESERVED_4", "RESERVED_5", "RESERVED_6", "RESERVED_7")),
-        "password_algorithm": {0: "LEGACY", 1: "KDFAES"}.get(password_algorithm, f"UNKNOWN({password_algorithm})" if password_algorithm is not None else None),
+        "password_algorithm": None if password_algorithm is None else {0: "LEGACY", 1: "KDFAES"}.get(password_algorithm, f"UNKNOWN({password_algorithm})"),
         "vmxevent_control_profile": _field(payload, layout["vmxevent_control_profile"], 8),
         "vmxevent_audit_profile": _field(payload, layout["vmxevent_audit_profile"], 8),
         "password_phrase_interval": _u16(payload, layout["password_phrase_interval"]),
