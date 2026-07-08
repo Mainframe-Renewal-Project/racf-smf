@@ -39,6 +39,7 @@ class _DecodedFieldPatch(TypedDict, total=False):
     distributed_identity_user_name: str | None
     distributed_identity_registry: str | None
     action_hint: str | None
+    initialization_context: dict[str, Any] | None
     compliance_context: dict[str, Any] | None
     compliance_summary: dict[str, Any] | None
     compliance_findings: tuple[dict[str, Any], ...]
@@ -73,6 +74,7 @@ class _DecodedFields(TypedDict):
     distributed_identity_user_name: str | None
     distributed_identity_registry: str | None
     action_hint: str | None
+    initialization_context: dict[str, Any] | None
     compliance_context: dict[str, Any] | None
     compliance_summary: dict[str, Any] | None
     compliance_findings: tuple[dict[str, Any], ...]
@@ -113,6 +115,7 @@ class SmfRecord:
     distributed_identity_user_name: str | None
     distributed_identity_registry: str | None
     action_hint: str | None
+    initialization_context: dict[str, Any] | None
     compliance_context: dict[str, Any] | None
     compliance_summary: dict[str, Any] | None
     compliance_findings: tuple[dict[str, Any], ...]
@@ -493,6 +496,233 @@ def _score_type80_layout(fields: _DecodedFieldPatch) -> int:
 def _decode_type80_fields(payload: bytes) -> _DecodedFieldPatch:
     decoded_layouts = [_decode_type80_layout(payload, layout) for layout in _TYPE80_LAYOUTS]
     return max(decoded_layouts, key=_score_type80_layout)
+
+
+def _decode_bit_options(value: int | None, labels: tuple[str, ...]) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    return tuple(label for index, label in enumerate(labels) if value & (0x80 >> index))
+
+
+_TYPE81_LAYOUTS = (
+    {
+        "system": 14,
+        "time": 6,
+        "date": 10,
+        "racf_database": 18,
+        "racf_database_volume": 62,
+        "racf_database_unit": 68,
+        "uads_dataset": 71,
+        "uads_volume": 115,
+        "options": 121,
+        "options2": 122,
+        "options3": 123,
+        "audit_options": 124,
+        "audit_options2": 125,
+        "terminal_options": 126,
+        "password_interval": 127,
+        "relocate_offset": 128,
+        "relocate_count": 130,
+        "version_indicator": 132,
+        "single_level_dataset_name": 133,
+        "options4": 141,
+        "options5": 142,
+        "retention_period": 143,
+        "erase_security_level": 145,
+        "audit_security_level": 146,
+        "racf_fmid": 147,
+        "setropts_options": 151,
+        "partner_lu_key_interval": 152,
+        "jes_nje_user_id": 154,
+        "jes_undefined_user_id": 162,
+        "setropts_extensions": 170,
+        "primary_language": 171,
+        "secondary_language": 172,
+        "kerb_level": 177,
+        "password_minimum_days": 178,
+        "options6": 179,
+        "mls_options2": 180,
+        "password_algorithm": 181,
+        "vmxevent_control_profile": 182,
+        "vmxevent_audit_profile": 190,
+        "password_phrase_interval": 198,
+    },
+    {
+        "system": 10,
+        "time": 2,
+        "date": 6,
+        "racf_database": 14,
+        "racf_database_volume": 58,
+        "racf_database_unit": 64,
+        "uads_dataset": 67,
+        "uads_volume": 111,
+        "options": 117,
+        "options2": 118,
+        "options3": 119,
+        "audit_options": 120,
+        "audit_options2": 121,
+        "terminal_options": 122,
+        "password_interval": 123,
+        "relocate_offset": 124,
+        "relocate_count": 126,
+        "version_indicator": 128,
+        "single_level_dataset_name": 129,
+        "options4": 137,
+        "options5": 138,
+        "retention_period": 139,
+        "erase_security_level": 141,
+        "audit_security_level": 142,
+        "racf_fmid": 143,
+        "setropts_options": 147,
+        "partner_lu_key_interval": 148,
+        "jes_nje_user_id": 150,
+        "jes_undefined_user_id": 158,
+        "setropts_extensions": 166,
+        "primary_language": 167,
+        "secondary_language": 168,
+        "kerb_level": 173,
+        "password_minimum_days": 174,
+        "options6": 175,
+        "mls_options2": 176,
+        "password_algorithm": 177,
+        "vmxevent_control_profile": 178,
+        "vmxevent_audit_profile": 186,
+        "password_phrase_interval": 194,
+    },
+)
+
+
+def _field(data: bytes, offset: int, length: int) -> str | None:
+    return _decode_ebcdic_field(data[offset : offset + length]) if offset + length <= len(data) else None
+
+
+def _byte(data: bytes, offset: int) -> int | None:
+    return data[offset] if offset < len(data) else None
+
+
+def _decode_type81_layout(payload: bytes, layout: dict[str, int]) -> _DecodedFieldPatch:
+    options = _byte(payload, layout["options"])
+    options2 = _byte(payload, layout["options2"])
+    options3 = _byte(payload, layout["options3"])
+    audit_options = _byte(payload, layout["audit_options"])
+    audit_options2 = _byte(payload, layout["audit_options2"])
+    terminal_options = _byte(payload, layout["terminal_options"])
+    options4 = _byte(payload, layout["options4"])
+    options5 = _byte(payload, layout["options5"])
+    setropts_options = _byte(payload, layout["setropts_options"])
+    setropts_extensions = _byte(payload, layout["setropts_extensions"])
+    options6 = _byte(payload, layout["options6"])
+    mls_options2 = _byte(payload, layout["mls_options2"])
+    password_algorithm = _byte(payload, layout["password_algorithm"])
+
+    context: dict[str, Any] = {
+        "racf_database": _field(payload, layout["racf_database"], 44),
+        "racf_database_volume": _field(payload, layout["racf_database_volume"], 6),
+        "racf_database_unit": _field(payload, layout["racf_database_unit"], 3),
+        "uads_dataset": _field(payload, layout["uads_dataset"], 44),
+        "uads_volume": _field(payload, layout["uads_volume"], 6),
+        "options": _decode_bit_options(options, (
+            "NO_VERIFY_STATISTICS", "NO_DATASET_STATISTICS", "VERIFY_PREPROCESSING_EXIT",
+            "AUTH_PREPROCESSING_EXIT", "DEFINE_PREPROCESSING_EXIT", "VERIFY_POSTPROCESSING_EXIT",
+            "AUTH_POSTPROCESSING_EXIT", "NEW_PASSWORD_EXIT",
+        )),
+        "options2": _decode_bit_options(options2, (
+            "NO_TAPE_VOLUME_STATISTICS", "NO_DASD_VOLUME_STATISTICS", "NO_TERMINAL_STATISTICS",
+            "COMMAND_EXIT_ICHCNX00", "COMMAND_EXIT_ICHCCX00", "ADSP_NOT_ACTIVE",
+            "ENCRYPTION_EXIT", "NAMING_CONVENTION_TABLE",
+        )),
+        "options3": _decode_bit_options(options3, (
+            "TAPE_VOLUME_PROTECTION", "NO_DUPLICATE_DATASET_NAMES", "DASD_VOLUME_PROTECTION",
+            "HAS_VERSION_INDICATOR", "FASTAUTH_PREPROCESSING_EXIT", "LIST_PRE_POST_EXIT",
+            "LIST_SELECTION_EXIT", "DEFINE_POSTPROCESSING_EXIT",
+        )),
+        "audit_options": _decode_bit_options(audit_options, (
+            "USER_PROFILE_CHANGES", "GROUP_PROFILE_CHANGES", "DATASET_PROFILE_CHANGES",
+            "TAPE_VOLUME_PROFILE_CHANGES", "DASD_VOLUME_PROFILE_CHANGES", "TERMINAL_PROFILE_CHANGES",
+            "COMMAND_VIOLATIONS", "SPECIAL_USER_ACTIVITY",
+        )),
+        "audit_options2": _decode_bit_options(audit_options2, ("OPERATIONS_USER_ACTIVITY", "SECLEVEL_AUDIT", "RESERVED_2", "RESERVED_3", "RESERVED_4", "RESERVED_5", "RESERVED_6", "RESERVED_7")),
+        "terminal_options": _decode_bit_options(terminal_options, (
+            "TERMINAL_AUTH_CHECKING", "UNDEFINED_TERMINAL_UACC_NONE", "REALDSN", "JES_XBMALLRACF",
+            "JES_EARLYVERIFY", "JES_BATCHALLRACF", "FASTAUTH_POSTPROCESSING_EXIT", "RESERVED_7",
+        )),
+        "password_interval": _byte(payload, layout["password_interval"]),
+        "relocate_offset": _u16(payload, layout["relocate_offset"]),
+        "relocate_count": _u16(payload, layout["relocate_count"]),
+        "version_indicator": _byte(payload, layout["version_indicator"]),
+        "single_level_dataset_name": _field(payload, layout["single_level_dataset_name"], 8),
+        "options4": _decode_bit_options(options4, (
+            "TAPEDSN", "PROTECTALL", "PROTECTALL_WARNING", "ERASE_ON_SCRATCH",
+            "ERASE_ON_SCRATCH_SECLEVEL", "ERASE_ON_SCRATCH_ALL", "ENHANCED_GENERIC_NAMING", "HAS_VRM",
+        )),
+        "options5": _decode_bit_options(options5, (
+            "PROGRAM_CONTROL", "ACEE_COMPRESSION_EXIT", "FASTAUTH_POSTPROCESSING_EXIT_4",
+            "FASTAUTH_PREPROCESSING_EXIT_3", "NOADDCREATOR", "IRREVX01_EXIT",
+            "RESERVED_6", "RESERVED_7",
+        )),
+        "retention_period": _u16(payload, layout["retention_period"]),
+        "erase_security_level": _byte(payload, layout["erase_security_level"]),
+        "audit_security_level": _byte(payload, layout["audit_security_level"]),
+        "racf_fmid": _field(payload, layout["racf_fmid"], 4),
+        "setropts_options": _decode_bit_options(setropts_options, (
+            "SECLABELCONTROL", "CATDSNS", "MLQUIET", "MLSTABLE", "MLS", "MLACTIVE",
+            "GENERICOWNER", "SECLABELAUDIT",
+        )),
+        "partner_lu_key_interval": _u16(payload, layout["partner_lu_key_interval"]),
+        "jes_nje_user_id": _field(payload, layout["jes_nje_user_id"], 8),
+        "jes_undefined_user_id": _field(payload, layout["jes_undefined_user_id"], 8),
+        "setropts_extensions": _decode_bit_options(setropts_extensions, (
+            "COMPATMODE", "CATDSNS_FAILURES", "MLS_FAILURES", "MLACTIVE_FAILURES", "APPLAUDIT",
+            "INSTALLATION_RVARY_SWITCH_PASSWORD", "INSTALLATION_RVARY_STATUS_PASSWORD", "ENHANCEDGENERICOWNER",
+        )),
+        "primary_language": _field(payload, layout["primary_language"], 3),
+        "secondary_language": _field(payload, layout["secondary_language"], 3),
+        "kerb_segment_level": _byte(payload, layout["kerb_level"]),
+        "password_minimum_days": _byte(payload, layout["password_minimum_days"]),
+        "options6": _decode_bit_options(options6, (
+            "MIXED_CASE_PASSWORDS", "PASSWORD_PHRASE_EXIT", "CUSTOM_FIELD_VALIDATION_EXIT",
+            "SPECIAL_PASSWORD_CHARACTERS", "RESERVED_4", "RESERVED_5", "RESERVED_6", "RESERVED_7",
+        )),
+        "mls_options2": _decode_bit_options(mls_options2, ("MLFSOBJ", "MLIPCOBJ", "MLNAMES", "SECLBYSYSTEM", "RESERVED_4", "RESERVED_5", "RESERVED_6", "RESERVED_7")),
+        "password_algorithm": {0: "LEGACY", 1: "KDFAES"}.get(password_algorithm, f"UNKNOWN({password_algorithm})" if password_algorithm is not None else None),
+        "vmxevent_control_profile": _field(payload, layout["vmxevent_control_profile"], 8),
+        "vmxevent_audit_profile": _field(payload, layout["vmxevent_audit_profile"], 8),
+        "password_phrase_interval": _u16(payload, layout["password_phrase_interval"]),
+    }
+    return {
+        "subtype": None,
+        "system_id": _decode_system_id(payload[layout["system"] : layout["system"] + 4]) if layout["system"] + 4 <= len(payload) else None,
+        "timestamp": _decode_smf_timestamp(payload, time_offset=layout["time"], date_offset=layout["date"]),
+        "product_name": "RACF",
+        "action_hint": "RACF_INITIALIZATION",
+        "initialization_context": context,
+        "resource_candidates": _unique_preserve_order([value for value in (context["racf_database"], context["uads_dataset"]) if isinstance(value, str)]),
+        "text_tokens": _unique_preserve_order([value for value in (context["racf_database"], context["uads_dataset"], context["racf_fmid"]) if isinstance(value, str)]),
+    }
+
+
+def _score_type81_layout(fields: _DecodedFieldPatch) -> int:
+    context = fields.get("initialization_context") or {}
+    score = 0
+    if fields.get("system_id"):
+        score += 2
+    if fields.get("timestamp"):
+        score += 2
+    for name in ("racf_database", "uads_dataset", "racf_fmid"):
+        if context.get(name):
+            score += 2
+    return score
+
+
+def _decode_type81_fields(payload: bytes) -> _DecodedFieldPatch:
+    decoded_layouts = [_decode_type81_layout(payload, layout) for layout in _TYPE81_LAYOUTS]
+    return max(decoded_layouts, key=_score_type81_layout)
+
+
+def _record_type_from_payload(payload: bytes, fallback: int) -> int:
+    if len(payload) > 5 and payload[5] == 81:
+        return 81
+    return fallback
 
 
 def _parse_type83_standard_relocates(data: bytes, start: int) -> dict[str, str | None]:
@@ -923,6 +1153,9 @@ def _classify(record_type: int, subtype: int | None, zos_unix_subtypes: set[int]
     if record_type == 80:
         tags.append("RACF")
 
+    if record_type == 81:
+        tags.append("RACF_INIT")
+
     if record_type == 83:
         if subtype is None or subtype in zos_unix_subtypes:
             tags.append("ZOS_UNIX_SECURITY")
@@ -953,7 +1186,7 @@ def _extract_fields(payload: bytes) -> _DecodedFields:
         raise ValueError("Record payload too short to determine record type")
 
     compliance_fields = _decode_type1154_subtype83_fields(payload)
-    record_type = int(compliance_fields.get("record_type", payload[4]))
+    record_type = int(compliance_fields.get("record_type", _record_type_from_payload(payload, payload[4])))
     decoded: _DecodedFields = {
         "record_type": record_type,
         "subtype": None,
@@ -980,6 +1213,7 @@ def _extract_fields(payload: bytes) -> _DecodedFields:
         "distributed_identity_user_name": None,
         "distributed_identity_registry": None,
         "action_hint": None,
+        "initialization_context": None,
         "compliance_context": None,
         "compliance_summary": None,
         "compliance_findings": (),
@@ -992,6 +1226,8 @@ def _extract_fields(payload: bytes) -> _DecodedFields:
         decoded.update(compliance_fields)
     elif record_type == 80:
         decoded.update(_decode_type80_fields(payload))
+    elif record_type == 81:
+        decoded.update(_decode_type81_fields(payload))
     elif record_type == 83:
         decoded.update(_decode_type83_fields(payload))
 
@@ -1250,6 +1486,7 @@ def iter_smf_records(
             distributed_identity_user_name=decoded["distributed_identity_user_name"],
             distributed_identity_registry=decoded["distributed_identity_registry"],
             action_hint=decoded["action_hint"],
+            initialization_context=decoded["initialization_context"],
             compliance_context=decoded["compliance_context"],
             compliance_summary=decoded["compliance_summary"],
             compliance_findings=decoded["compliance_findings"],

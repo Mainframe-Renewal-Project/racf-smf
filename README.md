@@ -17,6 +17,7 @@ The package is designed for two use cases:
 - Emits JSON records with key fields for each matching record.
 - Filters by default to security-relevant records:
   - RACF security events: SMF type 80
+  - RACF initialization context: SMF type 81
   - z/OS UNIX security events: SMF type 83 with subtypes 2, 3, or 4
   - RACF compliance evidence: SMF type 1154 subtype 83
 - Supports `--all` to emit all SMF records.
@@ -120,6 +121,12 @@ At the end, the CLI prints summary counters by record type and tag.
 RACF compliance evidence records, SMF type 1154 subtype 83, are emitted with
 `event_family="RACF_COMPLIANCE"` and include decoded compliance fields such as
 `compliance_context`, `compliance_summary`, and `compliance_findings`.
+
+RACF initialization records, SMF type 81, are emitted with
+`event_family="RACF_INIT"` and include IPL-time RACF configuration in
+`initialization_context`, including RACF database, UADS, option, audit,
+password, language, and RACF FMID fields. These records describe RACF startup
+state; they are context records, not per-user activity records.
 
 ## Python API for pySEAR and analytics
 
