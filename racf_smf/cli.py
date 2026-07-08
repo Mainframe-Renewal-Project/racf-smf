@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -69,12 +68,19 @@ def _dim(text: str) -> str:
     return _colored(text, _C.DIM)
 
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-
-
 def _visible_len(text: str) -> int:
     """Length of text as rendered in a terminal, ignoring ANSI color escapes."""
-    return len(_ANSI_RE.sub("", text))
+    visible = 0
+    index = 0
+    while index < len(text):
+        if text[index : index + 2] == "\033[":
+            end = text.find("m", index + 2)
+            if end >= 0:
+                index = end + 1
+                continue
+        visible += 1
+        index += 1
+    return visible
 
 
 def _pad_plain(text: str, width: int) -> str:

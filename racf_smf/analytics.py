@@ -4,7 +4,6 @@ from collections import Counter
 from collections.abc import Iterable, Iterator
 import os
 from pathlib import Path
-import re as _re
 from typing import Any
 
 from .parser import RecordFormat, SmfRecord, iter_security_records
@@ -15,23 +14,144 @@ DEFAULT_SMF_DATASET_PATTERNS: tuple[str, ...] = (
     "SYS1.MAN*",
 )
 
-# Matches the DSNAME(...) block in D SMF,O output including continuation lines.
-_DSNAME_BLOCK_RE = _re.compile(r"DSNAME\s*\(([^)]+)\)", _re.DOTALL | _re.IGNORECASE)
-# Matches LOGSTREAM(...) entries in SMFPRMxx or D SMF,O output.
-_LOGSTREAM_RE = _re.compile(r"LOGSTREAM\s*\(\s*([^)]+)\)", _re.DOTALL | _re.IGNORECASE)
-# Dataset names that contain MAN or SMF in at least one qualifier.
-_MAN_SMF_RE = _re.compile(r"(?:^|\.)(?:MAN|SMF)[A-Z0-9]*(?:\.|$)", _re.IGNORECASE)
-# Validates a syntactically legal MVS dataset name (each qualifier starts with a letter
-# or national character; digits-only tokens like block addresses are rejected).
-_VALID_DSN_RE = _re.compile(
-    r"^[A-Z#@$][A-Z0-9#@$]{0,7}(\.[A-Z#@$][A-Z0-9#@$]{0,7})*$",
-    _re.IGNORECASE,
-)
+_DSN_FIRST_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ#@$")
+_DSN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@$")
+_DSN_TOKEN_CHARS = _DSN_CHARS | frozenset(".")
 
 
 def _is_valid_dsn(name: str) -> bool:
     """Return True only for syntactically valid MVS dataset names (≤ 44 chars)."""
-    return bool(name) and len(name) <= 44 and bool(_VALID_DSN_RE.match(name))
+    if not name or len(name) > 44:
+        return False
+    qualifiers = name.upper().split(".")
+    return all(
+        qualifier
+        and len(qualifier) <= 8
+        and qualifier[0] in _DSN_FIRST_CHARS
+        and all(char in _DSN_CHARS for char in qualifier)
+        for qualifier in qualifiers
+    )
+
+
+def _has_man_or_smf_qualifier(name: str) -> bool:
+    return any(part.upper().startswith(("MAN", "SMF")) for part in name.split("."))
+
+
+def _clean_sysname(value: str) -> str | None:
+    cleaned = "".join(char for char in value.upper() if char in _DSN_CHARS)
+    return cleaned or None
+
+
+def _extract_dsn_tokens(text: str | None) -> list[str]:
+    if not text:
+        return []
+    tokens: list[str] = []
+    current: list[str] = []
+    for char in text.upper():
+        if char in _DSN_TOKEN_CHARS:
+            current.append(char)
+            continue
+        if current:
+            token = "".join(current).strip(".")
+            if "." in token and _is_valid_dsn(token):
+                tokens.append(token)
+            current = []
+    if current:
+        token = "".join(current).strip(".")
+        if "." in token and _is_valid_dsn(token):
+            tokens.append(token)
+    return tokens
+
+
+def _find_assignment_value(text: str | None, key: str) -> str | None:
+    if not text:
+        return None
+    upper = text.upper()
+    needle = key.upper()
+    cursor = 0
+    while True:
+        idx = upper.find(needle, cursor)
+        if idx < 0:
+            return None
+        after = idx + len(needle)
+        if idx > 0 and upper[idx - 1] in _DSN_CHARS:
+            cursor = after
+            continue
+        while after < len(upper) and upper[after].isspace():
+            after += 1
+        if after >= len(upper) or upper[after] != "=":
+            cursor = after
+            continue
+        after += 1
+        while after < len(upper) and upper[after].isspace():
+            after += 1
+        start = after
+        while after < len(upper) and upper[after] in _DSN_CHARS:
+            after += 1
+        return upper[start:after] or None
+
+
+def _iter_parenthesized_values(text: str | None, keyword: str) -> Iterator[str]:
+    if not text:
+        return
+    upper = text.upper()
+    needle = keyword.upper()
+    cursor = 0
+    while True:
+        idx = upper.find(needle, cursor)
+        if idx < 0:
+            return
+        after = idx + len(needle)
+        while after < len(upper) and upper[after].isspace():
+            after += 1
+        if after >= len(upper) or upper[after] != "(":
+            cursor = after
+            continue
+        start = after + 1
+        end = text.find(")", start)
+        if end < 0:
+            return
+        yield text[start:end]
+        cursor = end + 1
+
+
+def _find_ieasys_list(output: str) -> str | None:
+    upper = output.upper()
+    cursor = 0
+    while True:
+        idx = upper.find("IEASYS", cursor)
+        if idx < 0:
+            return None
+        list_idx = upper.find("LIST", idx + len("IEASYS"))
+        if list_idx < 0:
+            return None
+        between = upper[idx + len("IEASYS") : list_idx]
+        if between.strip():
+            cursor = idx + len("IEASYS")
+            continue
+        after = list_idx + len("LIST")
+        while after < len(upper) and upper[after].isspace():
+            after += 1
+        if after >= len(upper) or upper[after] != "=":
+            cursor = after
+            continue
+        after += 1
+        while after < len(upper) and upper[after].isspace():
+            after += 1
+        if after >= len(upper) or upper[after] != "(":
+            cursor = after
+            continue
+        end = output.find(")", after + 1)
+        return output[after + 1 : end] if end >= 0 else None
+
+
+def _find_smfprm_members(text: str) -> list[str]:
+    members: set[str] = set()
+    for token in text.replace("(", " ").replace(")", " ").replace(",", " ").split():
+        normalized = token.strip().upper()
+        if 6 <= len(normalized) <= 8 and normalized.startswith("SMFPRM") and all(char in _DSN_CHARS for char in normalized):
+            members.add(normalized)
+    return list(members)
 
 
 def _derive_sibling_pattern(dataset_name: str) -> str | None:
@@ -59,10 +179,6 @@ def _derive_sibling_broad_pattern(dataset_name: str) -> str | None:
     if ("MAN" in last or "SMF" in last) and len(parts) > 1:
         return ".".join(parts[:-1]) + ".*"
     return None
-
-
-_MEMBER_RE = _re.compile(r"MEMBER\s*=\s*(\w+)", _re.IGNORECASE)
-_PARMLIB_RE = _re.compile(r"PARMLIB\s*=\s*(\S+)", _re.IGNORECASE)
 
 
 def _opercmd_output(command: str, verbose: bool = False) -> str | None:
@@ -156,7 +272,7 @@ def _query_sear_smf_dataset_profiles(
             if isinstance(p, str) and p not in seen_profiles:
                 seen_profiles.add(p)
                 # Keep only non-generic profiles whose last qualifier looks like MAN*.
-                if "%" not in p and "*" not in p and _MAN_SMF_RE.search(p):
+                if "%" not in p and "*" not in p and _has_man_or_smf_qualifier(p):
                     candidates.append(p)
 
     if verbose:
@@ -175,8 +291,7 @@ def _parse_dsnames_from_output(output: str | None) -> list[str]:
     if not output:
         return []
     all_names: list[str] = []
-    for match in _DSNAME_BLOCK_RE.finditer(output):
-        raw = match.group(1)
+    for raw in _iter_parenthesized_values(output, "DSNAME"):
         for token in raw.replace("\n", ",").split(","):
             clean = "".join(c for c in token.strip() if c.isprintable()).strip()
             if clean and _is_valid_dsn(clean):
@@ -217,7 +332,7 @@ def _query_smf_d_datasets(verbose: bool = False) -> list[str]:
     if not names:
         # D SMF,D may format each dataset on its own line without a block.
         # Extract any token that looks like a multi-qualifier dataset name.
-        names = _re.findall(r"\b([A-Z#@$][A-Z0-9#@$]{0,7}(?:\.[A-Z0-9#@$]{1,8}){1,21})\b", output)
+        names = _extract_dsn_tokens(output)
     return names
 
 
@@ -256,7 +371,7 @@ def _query_parmlib_datasets(smfprm_member: str, verbose: bool = False) -> list[s
     # Determine current system name for &SYSNAME substitution.
     sysname: str | None = None
     try:
-        node = _re.sub(r"[^A-Z0-9#@$]", "", os.uname().nodename.upper())  # type: ignore[attr-defined]
+        node = _clean_sysname(os.uname().nodename)  # type: ignore[attr-defined]
         sysname = node or None
     except AttributeError:
         pass
@@ -292,7 +407,7 @@ def _query_zsystem_parmlib_search(verbose: bool = False) -> list[str]:
 
     sysname: str | None = None
     try:
-        node = _re.sub(r"[^A-Z0-9#@$]", "", os.uname().nodename.upper())  # type: ignore[attr-defined]
+        node = _clean_sysname(os.uname().nodename)  # type: ignore[attr-defined]
         sysname = node or None
     except AttributeError:
         pass
@@ -311,11 +426,11 @@ def _query_zsystem_parmlib_search(verbose: bool = False) -> list[str]:
         text_output = _coerce_text_output(output)
         raw_names = _parse_dsnames_from_output(text_output)
         if not raw_names:
-            raw_names = _re.findall(r"\b([A-Z#@$][A-Z0-9#@$]{0,7}(?:\.[A-Z0-9#@$]{1,8}){1,21})\b", text_output or "")
+            raw_names = _extract_dsn_tokens(text_output)
 
         resolved = _resolve_smf_variables(raw_names, sysname)
         for name in resolved:
-            if _MAN_SMF_RE.search(name) and name not in candidates:
+            if _has_man_or_smf_qualifier(name) and name not in candidates:
                 candidates.append(name)
 
     if verbose:
@@ -343,7 +458,8 @@ def _query_parmlib_concat(verbose: bool = False) -> list[str]:
         if len(parts) >= 2:
             candidate = parts[-1].upper().rstrip(".")
             if (
-                _re.match(r"^[A-Z#@$][A-Z0-9#@$]{0,7}(\.[A-Z0-9#@$]{1,8})+$", candidate)
+                _is_valid_dsn(candidate)
+                and "." in candidate
                 and candidate not in seen_set
             ):
                 seen_set.add(candidate)
@@ -374,9 +490,8 @@ def _read_smfprm_from_parmlibs(
                 if n not in seen:
                     seen.add(n)
                     results.append(n)
-            ls_m = _LOGSTREAM_RE.search(content)
-            if ls_m:
-                for ls in ls_m.group(1).replace("\n", ",").split(","):
+            for logstream_block in _iter_parenthesized_values(content, "LOGSTREAM"):
+                for ls in logstream_block.replace("\n", ",").split(","):
                     ls = ls.strip()
                     if ls and ls not in seen:
                         seen.add(ls)
@@ -402,9 +517,9 @@ def _query_full_parmlib_smfprm(sysname: str | None, verbose: bool = False) -> li
     active_member: str | None = None
     smfo = _opercmd_output("D SMF,O")
     if smfo:
-        m = _MEMBER_RE.search(smfo)
-        if m:
-            active_member = f"SMFPRM{m.group(1).upper()}"
+        member_suffix = _find_assignment_value(smfo, "MEMBER")
+        if member_suffix:
+            active_member = f"SMFPRM{member_suffix.upper()}"
 
     members_to_try: list[str] = []
     if active_member:
@@ -443,15 +558,15 @@ def _query_iplinfo_smfprm(sysname: str | None, verbose: bool = False) -> list[st
 
     parmlib_dsns = _query_parmlib_concat()
 
-    direct = _re.search(r"\bSMFPRM\s*=\s*([0-9A-Z]{1,2})\b", output, _re.IGNORECASE)
-    if direct:
-        member = f"SMFPRM{direct.group(1).upper():0>2}"
+    smfprm_suffix = _find_assignment_value(output, "SMFPRM")
+    if smfprm_suffix:
+        member = f"SMFPRM{smfprm_suffix.upper():0>2}"
         if verbose:
-            print(f"  D IPLINFO → SMFPRM suffix {direct.group(1).upper()}", flush=True)
+            print(f"  D IPLINFO -> SMFPRM suffix {smfprm_suffix.upper()}", flush=True)
         return _read_smfprm_from_parmlibs(parmlib_dsns, member, sysname)
 
-    ieasys_m = _re.search(r"IEASYS\s+LIST\s*=\s*\(([^)]+)\)", output, _re.IGNORECASE)
-    if not ieasys_m:
+    ieasys_list = _find_ieasys_list(output)
+    if not ieasys_list:
         return []
 
     try:
@@ -459,7 +574,7 @@ def _query_iplinfo_smfprm(sysname: str | None, verbose: bool = False) -> list[st
     except ImportError:
         return []
 
-    for suffix in ieasys_m.group(1).split(","):
+    for suffix in ieasys_list.split(","):
         suffix = suffix.strip().upper()
         if not suffix:
             continue
@@ -467,11 +582,11 @@ def _query_iplinfo_smfprm(sysname: str | None, verbose: bool = False) -> list[st
         for dsn in parmlib_dsns:
             try:
                 content = datasets.read(f"{dsn}({ieasys_member})")
-                smfm = _re.search(r"\bSMFPRM\s*=\s*([0-9A-Z]{1,2})\b", content or "", _re.IGNORECASE)
-                if smfm:
-                    member = f"SMFPRM{smfm.group(1).upper():0>2}"
+                smfprm_suffix = _find_assignment_value(content, "SMFPRM")
+                if smfprm_suffix:
+                    member = f"SMFPRM{smfprm_suffix.upper():0>2}"
                     if verbose:
-                        print(f"  {ieasys_member} → SMFPRM suffix {smfm.group(1).upper()}", flush=True)
+                        print(f"  {ieasys_member} -> SMFPRM suffix {smfprm_suffix.upper()}", flush=True)
                     return _read_smfprm_from_parmlibs(parmlib_dsns, member, sysname)
             except Exception:  # noqa: BLE001
                 continue
@@ -500,7 +615,7 @@ def _query_zsystem_all_smfprm_members(sysname: str | None, verbose: bool = False
         return []
 
     text = _coerce_text_output(raw) or ""
-    smfprm_members = list({m.upper() for m in _re.findall(r"\bSMFPRM[A-Z0-9]{0,2}\b", text, _re.IGNORECASE)})
+    smfprm_members = _find_smfprm_members(text)
     if verbose:
         print(f"  zsystem.list_parmlib found {len(smfprm_members)} SMFPRM* member(s)", flush=True)
 
@@ -511,7 +626,7 @@ def _query_zsystem_all_smfprm_members(sysname: str | None, verbose: bool = False
         try:
             found_text = _coerce_text_output(zsystem.find_parmlib(member)) or ""
             dsn_candidate = found_text.strip().split("(")[0].strip()
-            if _re.match(r"^[A-Z#@$][A-Z0-9#@$]{0,7}(\.[A-Z0-9#@$]{1,8})+$", dsn_candidate):
+            if _is_valid_dsn(dsn_candidate) and "." in dsn_candidate:
                 containing_dsn = dsn_candidate
         except Exception:  # noqa: BLE001
             pass
@@ -531,10 +646,6 @@ def _query_zsystem_all_smfprm_members(sysname: str | None, verbose: bool = False
 
 # ─── D LOGGER ─────────────────────────────────────────────────────────────────
 
-_LOGGER_TOKEN_RE = _re.compile(r"\b([A-Z#@$][A-Z0-9#@$]{0,7}(?:\.[A-Z0-9#@$]{1,8}){1,21})\b")
-_SMF_IN_TOKEN_RE = _re.compile(r"(?:^|\.)SMF(?:\.|$|[0-9A-Z])", _re.IGNORECASE)
-
-
 def _query_smf_logstreams(verbose: bool = False) -> list[str]:
     """
     Issue 'D LOGGER,L' and return logstream names that contain 'SMF'.
@@ -546,8 +657,8 @@ def _query_smf_logstreams(verbose: bool = False) -> list[str]:
         return []
     found: list[str] = []
     seen: set[str] = set()
-    for name in _LOGGER_TOKEN_RE.findall(output):
-        if _SMF_IN_TOKEN_RE.search(name) and name not in seen:
+    for name in _extract_dsn_tokens(output):
+        if _has_man_or_smf_qualifier(name) and name not in seen:
             seen.add(name)
             found.append(name)
     if verbose:
@@ -557,11 +668,10 @@ def _query_smf_logstreams(verbose: bool = False) -> list[str]:
 
 def _query_logstream_names(output: str) -> list[str]:
     """Extract logstream names from a LOGSTREAM(...) block in operator output."""
-    match = _LOGSTREAM_RE.search(output)
-    if not match:
-        return []
-    raw = match.group(1)
-    return [n.strip() for n in raw.replace("\n", ",").split(",") if n.strip()]
+    names: list[str] = []
+    for raw in _iter_parenthesized_values(output, "LOGSTREAM"):
+        names.extend(n.strip() for n in raw.replace("\n", ",").split(",") if n.strip())
+    return names
 
 
 def _read_logstream_records(logstream_name: str) -> list[bytes]:
@@ -603,9 +713,9 @@ def _query_active_smf_datasets(verbose: bool = False) -> list[str]:
 
     # Extract the active PARMLIB member name (MEMBER=xx) from D SMF,O output
     # and read it to get the complete DSNAME list.
-    member_match = _MEMBER_RE.search(output)
-    if member_match:
-        member = f"SMFPRM{member_match.group(1).upper()}"
+    member_suffix = _find_assignment_value(output, "MEMBER")
+    if member_suffix:
+        member = f"SMFPRM{member_suffix.upper()}"
         if verbose:
             print(f"  Active PARMLIB member: {member}", flush=True)
         parmlib_names = _query_parmlib_datasets(member, verbose=verbose)
@@ -643,14 +753,14 @@ def discover_smf_datasets(
     3.  pySEAR   — RACF dataset profiles whose names contain MAN or SMF.
     4.  zsystem.search_parmlib — scan active parmlib concatenation for DSNAME/LOGSTREAM tokens.
     5.  D PARMLIB — read active SMFPRMxx from every PARMLIB dataset in the concatenation.
-    6.  D IPLINFO — locate SMFPRM suffix via IEASYSxx when D SMF,O does not report it.
+    6.  D IPLINFO - locate SMFPRM suffix via IEASYSxx when D SMF,O does not report it.
     7.  zsystem.list_parmlib — enumerate all SMFPRM* members across the concatenation.
     8.  D LOGGER  — discover SMF logstreams for sites using logstream-based SMF recording.
     9.  Sibling expansion — catalog wildcard derived from any name found above.
     10. Catalog patterns  — explicit or default patterns when all else fails.
 
     If ``sources_out`` is provided it is populated with a mapping of
-    source label → list of dataset names that source contributed.
+    source label -> list of dataset names that source contributed.
     """
 
     try:
@@ -685,7 +795,7 @@ def discover_smf_datasets(
     # Pre-compute system name for &SYSNAME substitution; shared across all sources.
     _sysname: str | None = None
     try:
-        _node = _re.sub(r"[^A-Z0-9#@$]", "", os.uname().nodename.upper())  # type: ignore[attr-defined]
+        _node = _clean_sysname(os.uname().nodename)  # type: ignore[attr-defined]
         _sysname = _node or None
     except AttributeError:
         pass
@@ -716,7 +826,7 @@ def discover_smf_datasets(
         parmlib_names = _query_full_parmlib_smfprm(_sysname, verbose=verbose)
         _add(parmlib_names, "D PARMLIB (full concat)")
 
-        # --- Source 6: D IPLINFO → SMFPRM suffix via IEASYSxx ---
+        # --- Source 6: D IPLINFO -> SMFPRM suffix via IEASYSxx ---
         iplinfo_names = _query_iplinfo_smfprm(_sysname, verbose=verbose)
         _add(iplinfo_names, "D IPLINFO")
 
@@ -740,7 +850,7 @@ def discover_smf_datasets(
         siblings: list[str] = []
         for pat in sibling_patterns:
             for name in _list_dataset_names(datasets, pat, include_migrated=include_migrated):
-                if name not in seen and _MAN_SMF_RE.search(name):
+                if name not in seen and _has_man_or_smf_qualifier(name):
                     siblings.append(name)
         _add(siblings, "Sibling expansion")
 

@@ -1,16 +1,32 @@
 from __future__ import annotations
 
+import codecs
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, time, timedelta
 import os
 from pathlib import Path
-import re
 import struct
 import tempfile
 from typing import Any, Iterator, Literal, TypedDict
 
 
 RecordFormat = Literal["auto", "rdw", "smf", "man", "unloaded"]
+
+
+def _available_encodings(candidates: tuple[str, ...]) -> tuple[str, ...]:
+    available: list[str] = []
+    for encoding in candidates:
+        try:
+            codecs.lookup(encoding)
+        except LookupError:
+            continue
+        available.append(encoding)
+    return tuple(available)
+
+
+_EBCDIC_ENCODINGS = _available_encodings(("cp1047", "cp037")) or ("latin-1",)
+_SYSTEM_ID_ENCODINGS = (*_EBCDIC_ENCODINGS, "latin-1") if "latin-1" not in _EBCDIC_ENCODINGS else _EBCDIC_ENCODINGS
+_UNLOADED_ENCODINGS = _available_encodings(("utf-8", "cp1047", "cp037", "latin-1")) or ("latin-1",)
 
 
 class _DecodedFieldPatch(TypedDict, total=False):
@@ -201,7 +217,7 @@ def _decode_system_id(raw: bytes) -> str | None:
         return None
 
     # System identifiers are often EBCDIC on z/OS exports.
-    for encoding in ("cp1047", "cp037", "latin-1"):
+    for encoding in _SYSTEM_ID_ENCODINGS:
         try:
             return raw.decode(encoding).strip() or None
         except UnicodeDecodeError:
@@ -215,7 +231,9 @@ def _decode_ebcdic_field(raw: bytes) -> str | None:
     return text or None
 
 
-_TEXT_TOKEN_RE = re.compile(r"[A-Z0-9#@$][A-Z0-9#@$._/-]{2,43}")
+_TOKEN_FIRST_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@$")
+_TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@$._/-")
+_FIXED_IDENTIFIER_CHARS = _TOKEN_CHARS
 _ACTION_KEYWORDS = (
     "ADD",
     "ALTER",
@@ -436,25 +454,26 @@ _UNLOADED_HEADER_FIELDS = (
 
 
 def _decode_ebcdic_text(raw: bytes) -> str:
-    for encoding in ("cp1047", "cp037"):
-        try:
-            return raw.decode(encoding, errors="ignore")
-        except LookupError:
-            continue
+    for encoding in _EBCDIC_ENCODINGS:
+        return raw.decode(encoding, errors="ignore")
     return raw.decode("latin-1", errors="ignore")
 
 
-def _decode_unloaded_text(data: bytes) -> str:
-    for encoding in ("utf-8", "cp1047", "cp037", "latin-1"):
+def _detect_unloaded_encoding(data: bytes) -> str:
+    for encoding in _UNLOADED_ENCODINGS:
         try:
             text = data.decode(encoding)
-        except (LookupError, UnicodeDecodeError):
+        except UnicodeDecodeError:
             continue
         sample = text[:4096]
         if sample and sum(1 for char in sample if char.isprintable() or char in "\r\n\t") / len(sample) < 0.85:
             continue
-        return text
-    return data.decode("latin-1", errors="ignore")
+        return encoding
+    return "latin-1"
+
+
+def _decode_unloaded_text(data: bytes, encoding: str | None = None) -> str:
+    return data.decode(encoding or _detect_unloaded_encoding(data), errors="ignore")
 
 
 def _fixed_column(line: str, start: int, end: int) -> str | None:
@@ -486,7 +505,7 @@ def _parse_unloaded_timestamp(date_value: str | None, time_value: str | None) ->
     if not date_value or not time_value:
         return None
     try:
-        return datetime.strptime(f"{date_value} {time_value}", "%Y-%m-%d %H:%M:%S").isoformat()
+        return datetime.combine(date.fromisoformat(date_value), time.fromisoformat(time_value)).isoformat()
     except ValueError:
         return None
 
@@ -500,6 +519,30 @@ def _event_code_from_unloaded_type(event_type: str | None) -> int | None:
     return _UNLOADED_EVENT_CODES.get(normalized)
 
 
+def _is_unloaded_time(value: str | None) -> bool:
+    return bool(
+        value
+        and len(value) == 8
+        and value[0:2].isdigit()
+        and value[2] == ":"
+        and value[3:5].isdigit()
+        and value[5] == ":"
+        and value[6:8].isdigit()
+    )
+
+
+def _is_unloaded_date(value: str | None) -> bool:
+    return bool(
+        value
+        and len(value) == 10
+        and value[0:4].isdigit()
+        and value[4] == "-"
+        and value[5:7].isdigit()
+        and value[7] == "-"
+        and value[8:10].isdigit()
+    )
+
+
 def _looks_like_unloaded_type80_line(line: str) -> bool:
     if len(line) < 66:
         return False
@@ -508,16 +551,12 @@ def _looks_like_unloaded_type80_line(line: str) -> bool:
     date_written = _fixed_column(line, 28, 37)
     if not event_type or _event_code_from_unloaded_type(event_type) is None:
         return False
-    return bool(
-        time_written
-        and date_written
-        and re.fullmatch(r"\d{2}:\d{2}:\d{2}", time_written)
-        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_written)
-    )
+    return _is_unloaded_time(time_written) and _is_unloaded_date(date_written)
 
 
 def _looks_like_unloaded_type80_data(data: bytes) -> bool:
-    text = _decode_unloaded_text(data[:8192])
+    sample = data[:8192]
+    text = _decode_unloaded_text(sample, _detect_unloaded_encoding(sample))
     for line in text.splitlines()[:20]:
         if _looks_like_unloaded_type80_line(line):
             return True
@@ -606,12 +645,9 @@ def _decode_unloaded_type80_line(line: str) -> _DecodedFields | None:
     }
 
 
-_FIXED_IDENTIFIER_RE = re.compile(r"[A-Z0-9#@$._/-]{1,8}")
-
-
 def _decode_fixed_identifier(raw: bytes) -> str | None:
     text = (_decode_ebcdic_field(raw) or "").replace("\x00", "").strip().upper()
-    if not text or not _FIXED_IDENTIFIER_RE.fullmatch(text):
+    if not text or len(text) > 8 or any(char not in _FIXED_IDENTIFIER_CHARS for char in text):
         return None
     return text
 
@@ -667,9 +703,33 @@ def _unique_preserve_order(values: list[str]) -> tuple[str, ...]:
     return tuple(ordered)
 
 
+def _extract_text_tokens(text: str) -> tuple[str, ...]:
+    tokens: list[str] = []
+    current: list[str] = []
+
+    for char in text:
+        if current:
+            if char in _TOKEN_CHARS:
+                current.append(char)
+                if len(current) == 44:
+                    tokens.append("".join(current))
+                    current = []
+            else:
+                if len(current) >= 3:
+                    tokens.append("".join(current))
+                current = []
+        elif char in _TOKEN_FIRST_CHARS:
+            current.append(char)
+
+    if len(current) >= 3:
+        tokens.append("".join(current))
+
+    return _unique_preserve_order(tokens)
+
+
 def _decode_racf_hints(payload: bytes, system_id: str | None) -> tuple[str | None, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     text = _decode_ebcdic_text(payload).upper()
-    tokens = _unique_preserve_order(_TEXT_TOKEN_RE.findall(text))
+    tokens = _extract_text_tokens(text)
 
     action_hint = next((token for token in tokens if token in _ACTION_KEYWORDS), None)
 
@@ -757,13 +817,6 @@ def _decode_type80_layout(payload: bytes, layout: dict[str, int]) -> _DecodedFie
     smf_user_id = _decode_fixed_identifier(payload[smf_user_offset : smf_user_offset + 8]) if len(payload) >= smf_user_offset + 8 else None
     action_hint = _EVENT_CODE_NAMES.get(event_code) if event_code is not None else None
 
-    hints_action, user_candidates, resource_candidates, text_tokens = _decode_racf_hints(payload, None)
-    if action_hint is None:
-        action_hint = hints_action
-
-    if user_id:
-        user_candidates = _unique_preserve_order([user_id, *user_candidates])
-
     return {
         "subtype": None,
         "system_id": system_id,
@@ -776,9 +829,9 @@ def _decode_type80_layout(payload: bytes, layout: dict[str, int]) -> _DecodedFie
         "job_name": job_name,
         "smf_user_id": smf_user_id,
         "action_hint": action_hint,
-        "user_id_candidates": user_candidates,
-        "resource_candidates": resource_candidates,
-        "text_tokens": text_tokens,
+        "user_id_candidates": (user_id,) if user_id else (),
+        "resource_candidates": (),
+        "text_tokens": (),
     }
 
 
@@ -803,7 +856,20 @@ def _score_type80_layout(fields: _DecodedFieldPatch) -> int:
 
 def _decode_type80_fields(payload: bytes) -> _DecodedFieldPatch:
     decoded_layouts = [_decode_type80_layout(payload, layout) for layout in _TYPE80_LAYOUTS]
-    return max(decoded_layouts, key=_score_type80_layout)
+    selected = max(decoded_layouts, key=_score_type80_layout)
+    hints_action, user_candidates, resource_candidates, text_tokens = _decode_racf_hints(
+        payload,
+        selected.get("system_id") if isinstance(selected.get("system_id"), str) else None,
+    )
+    if selected.get("action_hint") is None:
+        selected["action_hint"] = hints_action
+    user_id = selected.get("user_id")
+    if isinstance(user_id, str):
+        user_candidates = _unique_preserve_order([user_id, *user_candidates])
+    selected["user_id_candidates"] = user_candidates
+    selected["resource_candidates"] = resource_candidates
+    selected["text_tokens"] = text_tokens
+    return selected
 
 
 def _decode_bit_options(value: int | None, labels: tuple[str, ...]) -> tuple[str, ...]:
@@ -1892,14 +1958,44 @@ def _make_smf_record(offset: int, total_length: int, payload_length: int, decode
 
 
 def _iter_records_unloaded_type80(data: bytes) -> Iterator[SmfRecord]:
+    encoding = _detect_unloaded_encoding(data[:8192])
     offset = 0
-    for raw_line in data.splitlines(keepends=True):
-        line = _decode_unloaded_text(raw_line)
+    data_len = len(data)
+    while offset < data_len:
+        next_line = data.find(b"\n", offset)
+        end = data_len if next_line < 0 else next_line + 1
+        raw_line = data[offset:end]
+        line = _decode_unloaded_text(raw_line, encoding)
         row = line.rstrip("\r\n")
         decoded = _decode_unloaded_type80_line(row)
         if decoded is not None:
             yield _make_smf_record(offset, len(raw_line), len(row), decoded)
-        offset += len(raw_line)
+        offset = end
+
+
+def _iter_records_unloaded_type80_dataset(records: list[bytes]) -> Iterator[SmfRecord]:
+    sample = _sample_dataset_records(records)
+    encoding = _detect_unloaded_encoding(sample)
+    offset = 0
+    for record in records:
+        payload = _normalize_dataset_record(record)
+        line = _decode_unloaded_text(payload, encoding)
+        row = line.rstrip("\r\n")
+        decoded = _decode_unloaded_type80_line(row)
+        if decoded is not None:
+            yield _make_smf_record(offset, len(record), len(row), decoded)
+        offset += len(record)
+
+
+def _sample_dataset_records(records: list[bytes], *, max_records: int = 20, max_bytes: int = 8192) -> bytes:
+    sample = bytearray()
+    for record in records[:max_records]:
+        if sample:
+            sample.append(0x0A)
+        sample.extend(_normalize_dataset_record(record)[: max(0, max_bytes - len(sample))])
+        if len(sample) >= max_bytes:
+            break
+    return bytes(sample)
 
 
 def _iterator_from_data(data: bytes, *, record_format: RecordFormat, strict_man: bool) -> Iterator[tuple[int, int, bytes]]:
@@ -1954,11 +2050,9 @@ def iter_smf_records(
     if dataset_name is not None:
         try:
             dataset_records = _read_records_from_dataset(dataset_name)
-            dataset_data = b"\n".join(_normalize_dataset_record(record) for record in dataset_records)
-            active_format = _detect_format(dataset_data) if record_format == "auto" else record_format
+            active_format = _detect_format(_sample_dataset_records(dataset_records)) if record_format == "auto" else record_format
             if active_format == "unloaded":
-                iterator_records = _iter_records_unloaded_type80(dataset_data)
-                for record in iterator_records:
+                for record in _iter_records_unloaded_type80_dataset(dataset_records):
                     yield record
                 return
             iterator = _iter_records_dataset(dataset_records)
