@@ -112,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  racf-smf /tmp/smf.bin --format rdw\n"
             "      Read a local VB/RDW-wrapped SMF extract.\n\n"
-            "  racf-smf USER.SMF.MAN1 --dataset-input --format man\n"
+            "  racf-smf HLQ.SMF.MAN1 --dataset-input --format man\n"
             "      Read a MAN dataset by name.\n\n"
             "  racf-smf --discover --summary-only\n"
             "      Auto-discover datasets, scan them, and print only summaries.\n\n"
@@ -134,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Treat the positional input as a z/OS dataset name instead of a local file path. "
-            "Use this for names such as USER.SMF.MAN1 or SITE.SMF.DATA.MANX."
+            "Use this for names such as HLQ.SMF.MAN1 or HLQ.SMF.DATA.MANX."
         ),
     )
     parser.add_argument(
@@ -152,7 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="dataset_patterns",
         metavar="PATTERN",
         help=(
-            "Dataset name pattern to use during discovery, for example USER.*.MAN* or SITE.SMF.DATA.*. "
+            "Dataset name pattern to use during discovery, for example HLQ.*.MAN* or HLQ.SMF.DATA.*. "
             "This option is repeatable. Supplying one or more patterns bypasses live-source discovery "
             "and uses the provided catalog search patterns instead."
         ),
@@ -176,12 +176,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--format",
-        choices=("auto", "rdw", "smf", "man"),
+        choices=("auto", "rdw", "smf", "man", "unloaded"),
         default="auto",
         help=(
             "Record framing format. 'auto' tries to detect the layout. 'rdw' expects classic VB/RDW-"
             "wrapped records. 'smf' expects raw SMF records with no RDW/BDW framing. 'man' expects a "
-            "MAN dataset style stream with BDW/VBS segmentation."
+            "MAN dataset style stream with BDW/VBS segmentation. 'unloaded' expects IRRADU00 tabular "
+            "unloaded SMF type 80 records."
         ),
     )
     parser.add_argument(

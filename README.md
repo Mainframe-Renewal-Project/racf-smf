@@ -13,6 +13,7 @@ The package is designed for two use cases:
   - MAN dataset BDW/VBS format (`--format man`)
   - RDW-framed VB format (`--format rdw`)
   - Raw concatenated SMF record format (`--format smf`)
+  - IRRADU00 tabular unloaded SMF type 80 format (`--format unloaded`)
   - Auto-detected mode (`--format auto`, default)
 - Emits JSON records with key fields for each matching record.
 - Filters by default to security-relevant records:
@@ -64,13 +65,24 @@ racf-smf path\to\smf.bin --format rdw
 Parse a raw MAN dataset extract directly:
 
 ```powershell
-racf-smf path\to\SYS1.MAN01.bin --format man --json-out security_records.jsonl
+racf-smf path\to\smf-man.bin --format man --json-out security_records.jsonl
 ```
+
+Parse RACF SMF data unloaded by IRRADU00 in tabular format:
+
+```powershell
+racf-smf path\to\irradu00-type80.txt --format unloaded --json-out security_records.jsonl
+```
+
+Unloaded type 80 rows are emitted as RACF events and include the documented
+common header columns in `unloaded_fields`, including event type and qualifier,
+write timestamp, SMF system ID, violation/audit/auth flags, event user and group,
+terminal, job name, SMF user ID, security label, and RACF version.
 
 Read directly from an MVS dataset using ZOAU (USS on z/OS):
 
 ```sh
-racf-smf USER.SMF.MAN1 --dataset-input --json-out /u/you/security_records.jsonl
+racf-smf HLQ.SMF.MAN1 --dataset-input --json-out /u/you/security_records.jsonl
 ```
 
 Read a specific generation dataset:
@@ -82,7 +94,7 @@ racf-smf HLQ.SMF.DAILY.G0001V00 --dataset-input --json-out /u/you/security_recor
 Validate MAN extract integrity while parsing (fail fast on malformed BDW/RDW segments):
 
 ```powershell
-racf-smf path\to\SYS1.MAN01.bin --format man --strict-man --json-out security_records.jsonl
+racf-smf path\to\smf-man.bin --format man --strict-man --json-out security_records.jsonl
 ```
 
 Note: `--strict-man` applies to byte-stream MAN files. ZOAU dataset reads are record-oriented.
@@ -174,7 +186,7 @@ For dataset input in Python APIs, set `dataset_input=True`:
 ```python
 from racf_smf import iter_security_events
 
-for event in iter_security_events("USER.SMF.MAN1", dataset_input=True):
+for event in iter_security_events("HLQ.SMF.MAN1", dataset_input=True):
   process(event)
 ```
 
@@ -220,7 +232,7 @@ Use custom discovery patterns when your site naming differs:
 from racf_smf import read_discovered_security_events
 
 events = read_discovered_security_events(
-  dataset_patterns=["SYS1.*.MAN*", "SMFPRD.*.MAN*"],
+  dataset_patterns=["HLQ.*.MAN*", "HLQ.SMF.*"],
   include_migrated=False,
 )
 ```

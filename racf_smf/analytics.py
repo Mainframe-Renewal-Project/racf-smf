@@ -52,7 +52,7 @@ def _derive_sibling_broad_pattern(dataset_name: str) -> str | None:
     """
     Full-qualifier wildcard for the parent prefix, used as a fallback when ZOAU
     does not support within-qualifier wildcards.
-    e.g. USER.SMF.MAN03 -> USER.SMF.*  (caller filters with _MAN_SMF_RE)
+    e.g. HLQ.SMF.MAN03 -> HLQ.SMF.*  (caller filters with _MAN_SMF_RE)
     """
     parts = dataset_name.upper().split(".")
     last = parts[-1]
@@ -810,6 +810,7 @@ def record_to_event(record: SmfRecord, *, source: str | None = None) -> dict[str
         "compliance_context": record.compliance_context,
         "compliance_summary": record.compliance_summary,
         "compliance_findings": tuple(record.compliance_findings),
+        "unloaded_fields": record.unloaded_fields,
         "user_id_candidates": tuple(record.user_id_candidates),
         "resource_candidates": tuple(record.resource_candidates),
         "text_tokens": tuple(record.text_tokens),

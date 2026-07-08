@@ -10,7 +10,7 @@ import tempfile
 from typing import Any, Iterator, Literal, TypedDict
 
 
-RecordFormat = Literal["auto", "rdw", "smf", "man"]
+RecordFormat = Literal["auto", "rdw", "smf", "man", "unloaded"]
 
 
 class _DecodedFieldPatch(TypedDict, total=False):
@@ -43,6 +43,7 @@ class _DecodedFieldPatch(TypedDict, total=False):
     compliance_context: dict[str, Any] | None
     compliance_summary: dict[str, Any] | None
     compliance_findings: tuple[dict[str, Any], ...]
+    unloaded_fields: dict[str, Any] | None
     user_id_candidates: tuple[str, ...]
     resource_candidates: tuple[str, ...]
     text_tokens: tuple[str, ...]
@@ -78,6 +79,7 @@ class _DecodedFields(TypedDict):
     compliance_context: dict[str, Any] | None
     compliance_summary: dict[str, Any] | None
     compliance_findings: tuple[dict[str, Any], ...]
+    unloaded_fields: dict[str, Any] | None
     user_id_candidates: tuple[str, ...]
     resource_candidates: tuple[str, ...]
     text_tokens: tuple[str, ...]
@@ -119,6 +121,7 @@ class SmfRecord:
     compliance_context: dict[str, Any] | None
     compliance_summary: dict[str, Any] | None
     compliance_findings: tuple[dict[str, Any], ...]
+    unloaded_fields: dict[str, Any] | None
     user_id_candidates: tuple[str, ...]
     resource_candidates: tuple[str, ...]
     text_tokens: tuple[str, ...]
@@ -288,6 +291,149 @@ _EVENT_CODE_NAMES = {
     76: "REMOVE_FILE_ACL",
 }
 
+_UNLOADED_EVENT_CODES = {
+    "JOBINIT": 1,
+    "ACCESS": 2,
+    "ADDVOL": 3,
+    "RENAMEDS": 4,
+    "DELRES": 5,
+    "DELVOL": 6,
+    "DEFINE": 7,
+    "ADDSD": 8,
+    "ADDGROUP": 9,
+    "ADDUSER": 10,
+    "ALTDSD": 11,
+    "ALTGROUP": 12,
+    "ALTUSER": 13,
+    "CONNECT": 14,
+    "DELDSD": 15,
+    "DELGROUP": 16,
+    "DELUSER": 17,
+    "PASSWORD": 18,
+    "PERMIT": 19,
+    "RALTER": 20,
+    "RDEFINE": 21,
+    "RDELETE": 22,
+    "REMOVE": 23,
+    "SETROPTS": 24,
+    "RVARY": 25,
+    "APPCLU": 26,
+    "GENERAL": 27,
+    "DIRSRCH": 28,
+    "DACCESS": 29,
+    "FACCESS": 30,
+    "CHAUDIT": 31,
+    "CHDIR": 32,
+    "CHMOD": 33,
+    "CHOWN": 34,
+    "CLRSETID": 35,
+    "EXESETID": 36,
+    "GETPSENT": 37,
+    "INITOEDP": 38,
+    "TERMOEDP": 39,
+    "KILL": 40,
+    "LINK": 41,
+    "MKDIR": 42,
+    "MKNOD": 43,
+    "MNTFSYS": 44,
+    "OPENFILE": 45,
+    "PTRACE": 46,
+    "RENAMEF": 47,
+    "RMDIR": 48,
+    "SETEGID": 49,
+    "SETEUID": 50,
+    "SETGID": 51,
+    "SETUID": 52,
+    "SYMLINK": 53,
+    "UNLINK": 54,
+    "UMNTFSYS": 55,
+    "CHKFOWN": 56,
+    "CHKPRIV": 57,
+    "OPENSTTY": 58,
+    "RACLINK": 59,
+    "IPCCHK": 60,
+    "IPCGET": 61,
+    "IPCCTL": 62,
+    "SETGROUP": 63,
+    "CKOWN2": 64,
+    "R_AUDIT": 65,
+    "RACDCERT": 66,
+    "INITACEE": 67,
+    "KTICKET": 68,
+    "RPKIGENC": 69,
+    "RPKIEXPT": 70,
+    "PDACCESS": 71,
+    "RPKIREAD": 72,
+    "RPKIUPDR": 73,
+    "RPKIUPDC": 74,
+    "SETFACL": 75,
+    "DELFACL": 76,
+    "SETFSECL": 77,
+    "WRITEDWN": 78,
+    "PKIDPUBR": 79,
+    "RPKIRESP": 80,
+    "PTEVAL": 81,
+    "PTCREATE": 82,
+    "RPKISCEP": 83,
+    "RDATAUPD": 84,
+    "PKIAURNW": 85,
+    "PGMVERYF": 86,
+    "RACMAP": 87,
+    "AUTOPROF": 88,
+    "RPKIQREC": 89,
+    "PKIGENC": 90,
+    "PRLIMIT": 91,
+}
+
+_UNLOADED_HEADER_FIELDS = (
+    ("event_type", 1, 8, "char"),
+    ("event_qualifier_text", 10, 17, "char"),
+    ("time_written", 19, 26, "char"),
+    ("date_written", 28, 37, "char"),
+    ("system_smfid", 39, 42, "char"),
+    ("violation", 44, 47, "yesno"),
+    ("user_not_defined", 49, 52, "yesno"),
+    ("user_warning", 54, 57, "yesno"),
+    ("event_user_id", 59, 66, "char"),
+    ("event_group_id", 68, 75, "char"),
+    ("auth_normal", 77, 80, "yesno"),
+    ("auth_special", 82, 85, "yesno"),
+    ("auth_operations", 87, 90, "yesno"),
+    ("auth_audit", 92, 95, "yesno"),
+    ("auth_exit", 97, 100, "yesno"),
+    ("auth_failsoft", 102, 105, "yesno"),
+    ("auth_bypass", 107, 110, "yesno"),
+    ("auth_trusted", 112, 115, "yesno"),
+    ("log_class", 117, 120, "yesno"),
+    ("log_user", 122, 125, "yesno"),
+    ("log_special", 127, 130, "yesno"),
+    ("log_access", 132, 135, "yesno"),
+    ("log_racinit", 137, 140, "yesno"),
+    ("log_always", 142, 145, "yesno"),
+    ("log_cmdviol", 147, 150, "yesno"),
+    ("log_global", 152, 155, "yesno"),
+    ("terminal_level", 157, 159, "int"),
+    ("backout_failed", 161, 164, "yesno"),
+    ("profile_unchanged", 166, 169, "yesno"),
+    ("terminal_id", 171, 178, "char"),
+    ("job_name", 180, 187, "char"),
+    ("read_time", 189, 196, "char"),
+    ("read_date", 198, 207, "char"),
+    ("smf_user_id", 209, 216, "char"),
+    ("log_security_level", 218, 221, "yesno"),
+    ("log_vm_event", 223, 226, "yesno"),
+    ("log_logoptions", 228, 231, "yesno"),
+    ("log_seclabel", 233, 236, "yesno"),
+    ("log_compatmode", 238, 241, "yesno"),
+    ("log_applaudit", 243, 246, "yesno"),
+    ("log_non_omvs_user", 248, 251, "yesno"),
+    ("log_omvs_superuser_required", 253, 256, "yesno"),
+    ("auth_omvs_superuser", 258, 261, "yesno"),
+    ("auth_omvs_system", 263, 266, "yesno"),
+    ("user_seclabel", 268, 275, "char"),
+    ("racf_version", 277, 280, "char"),
+)
+
 
 def _decode_ebcdic_text(raw: bytes) -> str:
     for encoding in ("cp1047", "cp037"):
@@ -296,6 +442,168 @@ def _decode_ebcdic_text(raw: bytes) -> str:
         except LookupError:
             continue
     return raw.decode("latin-1", errors="ignore")
+
+
+def _decode_unloaded_text(data: bytes) -> str:
+    for encoding in ("utf-8", "cp1047", "cp037", "latin-1"):
+        try:
+            text = data.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+        sample = text[:4096]
+        if sample and sum(1 for char in sample if char.isprintable() or char in "\r\n\t") / len(sample) < 0.85:
+            continue
+        return text
+    return data.decode("latin-1", errors="ignore")
+
+
+def _fixed_column(line: str, start: int, end: int) -> str | None:
+    if len(line) < start:
+        return None
+    value = line[start - 1 : min(end, len(line))].strip()
+    return value or None
+
+
+def _parse_unloaded_value(value: str | None, field_type: str) -> Any:
+    if value is None:
+        return None
+    if field_type == "yesno":
+        normalized = value.upper()
+        if normalized == "YES":
+            return True
+        if normalized == "NO":
+            return False
+        return value
+    if field_type == "int":
+        try:
+            return int(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _parse_unloaded_timestamp(date_value: str | None, time_value: str | None) -> str | None:
+    if not date_value or not time_value:
+        return None
+    try:
+        return datetime.strptime(f"{date_value} {time_value}", "%Y-%m-%d %H:%M:%S").isoformat()
+    except ValueError:
+        return None
+
+
+def _event_code_from_unloaded_type(event_type: str | None) -> int | None:
+    if not event_type:
+        return None
+    normalized = event_type.upper()
+    if normalized.isdigit():
+        return int(normalized)
+    return _UNLOADED_EVENT_CODES.get(normalized)
+
+
+def _looks_like_unloaded_type80_line(line: str) -> bool:
+    if len(line) < 66:
+        return False
+    event_type = _fixed_column(line, 1, 8)
+    time_written = _fixed_column(line, 19, 26)
+    date_written = _fixed_column(line, 28, 37)
+    if not event_type or _event_code_from_unloaded_type(event_type) is None:
+        return False
+    return bool(
+        time_written
+        and date_written
+        and re.fullmatch(r"\d{2}:\d{2}:\d{2}", time_written)
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_written)
+    )
+
+
+def _looks_like_unloaded_type80_data(data: bytes) -> bool:
+    text = _decode_unloaded_text(data[:8192])
+    for line in text.splitlines()[:20]:
+        if _looks_like_unloaded_type80_line(line):
+            return True
+    return False
+
+
+def _decode_unloaded_type80_line(line: str) -> _DecodedFields | None:
+    if not _looks_like_unloaded_type80_line(line):
+        return None
+
+    unloaded_fields: dict[str, Any] = {}
+    for name, start, end, field_type in _UNLOADED_HEADER_FIELDS:
+        value = _fixed_column(line, start, end)
+        parsed = _parse_unloaded_value(value, field_type)
+        if parsed is not None:
+            unloaded_fields[name] = parsed
+
+    event_type = unloaded_fields.get("event_type")
+    event_type_text = event_type if isinstance(event_type, str) else None
+    event_code = _event_code_from_unloaded_type(event_type_text)
+    qualifier_text = unloaded_fields.get("event_qualifier_text")
+    event_qualifier = int(qualifier_text) if isinstance(qualifier_text, str) and qualifier_text.isdigit() else None
+    timestamp = _parse_unloaded_timestamp(
+        unloaded_fields.get("date_written") if isinstance(unloaded_fields.get("date_written"), str) else None,
+        unloaded_fields.get("time_written") if isinstance(unloaded_fields.get("time_written"), str) else None,
+    )
+
+    user_id = unloaded_fields.get("event_user_id") if isinstance(unloaded_fields.get("event_user_id"), str) else None
+    group_name = unloaded_fields.get("event_group_id") if isinstance(unloaded_fields.get("event_group_id"), str) else None
+    smf_user_id = unloaded_fields.get("smf_user_id") if isinstance(unloaded_fields.get("smf_user_id"), str) else None
+    terminal_id = unloaded_fields.get("terminal_id") if isinstance(unloaded_fields.get("terminal_id"), str) else None
+    job_name = unloaded_fields.get("job_name") if isinstance(unloaded_fields.get("job_name"), str) else None
+    action_hint = event_type_text or (_EVENT_CODE_NAMES.get(event_code) if event_code is not None else None)
+    text_values = [
+        value
+        for value in (
+            event_type_text,
+            qualifier_text if isinstance(qualifier_text, str) else None,
+            user_id,
+            group_name,
+            terminal_id,
+            job_name,
+            smf_user_id,
+            unloaded_fields.get("system_smfid") if isinstance(unloaded_fields.get("system_smfid"), str) else None,
+            unloaded_fields.get("user_seclabel") if isinstance(unloaded_fields.get("user_seclabel"), str) else None,
+            unloaded_fields.get("racf_version") if isinstance(unloaded_fields.get("racf_version"), str) else None,
+        )
+        if value
+    ]
+    user_candidates = [value for value in (user_id, smf_user_id, group_name) if value]
+
+    return {
+        "record_type": 80,
+        "subtype": None,
+        "system_id": unloaded_fields.get("system_smfid") if isinstance(unloaded_fields.get("system_smfid"), str) else None,
+        "timestamp": timestamp,
+        "event_code": event_code,
+        "event_qualifier": event_qualifier,
+        "user_id": user_id,
+        "group_name": group_name,
+        "terminal_id": terminal_id,
+        "job_name": job_name,
+        "smf_user_id": smf_user_id,
+        "product_name": None,
+        "product_version": unloaded_fields.get("racf_version") if isinstance(unloaded_fields.get("racf_version"), str) else None,
+        "address_space_user_id": None,
+        "address_space_group_name": None,
+        "resource_name": None,
+        "class_name": None,
+        "profile_name": None,
+        "authenticated_user_name": None,
+        "authenticated_user_registry": None,
+        "authenticated_user_host": None,
+        "authenticated_user_oid": None,
+        "distributed_identity_user_name": None,
+        "distributed_identity_registry": None,
+        "action_hint": action_hint,
+        "initialization_context": None,
+        "compliance_context": None,
+        "compliance_summary": None,
+        "compliance_findings": (),
+        "unloaded_fields": unloaded_fields,
+        "user_id_candidates": _unique_preserve_order(user_candidates),
+        "resource_candidates": (),
+        "text_tokens": _unique_preserve_order(text_values),
+    }
 
 
 _FIXED_IDENTIFIER_RE = re.compile(r"[A-Z0-9#@$._/-]{1,8}")
@@ -1371,6 +1679,7 @@ def _extract_fields(payload: bytes) -> _DecodedFields:
         "compliance_context": None,
         "compliance_summary": None,
         "compliance_findings": (),
+        "unloaded_fields": None,
         "user_id_candidates": (),
         "resource_candidates": (),
         "text_tokens": (),
@@ -1540,8 +1849,63 @@ def _iter_records_smf(data: bytes) -> Iterator[tuple[int, int, bytes]]:
         raise ValueError(f"Trailing bytes after SMF parsing at offset {cursor}")
 
 
+def _make_smf_record(offset: int, total_length: int, payload_length: int, decoded: _DecodedFields) -> SmfRecord:
+    return SmfRecord(
+        offset=offset,
+        total_length=total_length,
+        record_length=payload_length,
+        record_type=int(decoded["record_type"]),
+        subtype=decoded["subtype"],
+        system_id=decoded["system_id"],
+        timestamp=decoded["timestamp"],
+        event_code=decoded["event_code"],
+        event_qualifier=decoded["event_qualifier"],
+        user_id=decoded["user_id"],
+        group_name=decoded["group_name"],
+        terminal_id=decoded["terminal_id"],
+        job_name=decoded["job_name"],
+        smf_user_id=decoded["smf_user_id"],
+        product_name=decoded["product_name"],
+        product_version=decoded["product_version"],
+        address_space_user_id=decoded["address_space_user_id"],
+        address_space_group_name=decoded["address_space_group_name"],
+        resource_name=decoded["resource_name"],
+        class_name=decoded["class_name"],
+        profile_name=decoded["profile_name"],
+        authenticated_user_name=decoded["authenticated_user_name"],
+        authenticated_user_registry=decoded["authenticated_user_registry"],
+        authenticated_user_host=decoded["authenticated_user_host"],
+        authenticated_user_oid=decoded["authenticated_user_oid"],
+        distributed_identity_user_name=decoded["distributed_identity_user_name"],
+        distributed_identity_registry=decoded["distributed_identity_registry"],
+        action_hint=decoded["action_hint"],
+        initialization_context=decoded["initialization_context"],
+        compliance_context=decoded["compliance_context"],
+        compliance_summary=decoded["compliance_summary"],
+        compliance_findings=decoded["compliance_findings"],
+        unloaded_fields=decoded["unloaded_fields"],
+        user_id_candidates=decoded["user_id_candidates"],
+        resource_candidates=decoded["resource_candidates"],
+        text_tokens=decoded["text_tokens"],
+        tags=[],
+    )
+
+
+def _iter_records_unloaded_type80(data: bytes) -> Iterator[SmfRecord]:
+    offset = 0
+    for raw_line in data.splitlines(keepends=True):
+        line = _decode_unloaded_text(raw_line)
+        row = line.rstrip("\r\n")
+        decoded = _decode_unloaded_type80_line(row)
+        if decoded is not None:
+            yield _make_smf_record(offset, len(raw_line), len(row), decoded)
+        offset += len(raw_line)
+
+
 def _iterator_from_data(data: bytes, *, record_format: RecordFormat, strict_man: bool) -> Iterator[tuple[int, int, bytes]]:
     active_format = _detect_format(data) if record_format == "auto" else record_format
+    if active_format == "unloaded":
+        raise ValueError("Unloaded SMF data must be parsed through iter_smf_records")
     if active_format == "rdw":
         return _iter_records_rdw(data)
     if active_format == "man":
@@ -1550,6 +1914,9 @@ def _iterator_from_data(data: bytes, *, record_format: RecordFormat, strict_man:
 
 
 def _detect_format(data: bytes) -> RecordFormat:
+    if _looks_like_unloaded_type80_data(data):
+        return "unloaded"
+
     if len(data) < 8:
         return "smf"
 
@@ -1586,7 +1953,15 @@ def iter_smf_records(
     dataset_name = str(path).strip() if dataset_input else _dataset_name_from_source(path)
     if dataset_name is not None:
         try:
-            iterator = _iter_records_dataset(_read_records_from_dataset(dataset_name))
+            dataset_records = _read_records_from_dataset(dataset_name)
+            dataset_data = b"\n".join(_normalize_dataset_record(record) for record in dataset_records)
+            active_format = _detect_format(dataset_data) if record_format == "auto" else record_format
+            if active_format == "unloaded":
+                iterator_records = _iter_records_unloaded_type80(dataset_data)
+                for record in iterator_records:
+                    yield record
+                return
+            iterator = _iter_records_dataset(dataset_records)
         except OSError as exc:
             # EDC5012I: dataset rejects file-positioning; fall back to copy.
             # EDC5092I: I/O abend (e.g. non-SMF dataset opened as binary);
@@ -1605,52 +1980,25 @@ def iter_smf_records(
             if errno_val != 12 and "EDC5012I" not in message:
                 raise
             data = _read_dataset_stream_via_copy(dataset_name)
+            active_format = _detect_format(data) if record_format == "auto" else record_format
+            if active_format == "unloaded":
+                for record in _iter_records_unloaded_type80(data):
+                    yield record
+                return
             iterator = _iterator_from_data(data, record_format=record_format, strict_man=strict_man)
     else:
         file_path = Path(path)
         data = file_path.read_bytes()
+        active_format = _detect_format(data) if record_format == "auto" else record_format
+        if active_format == "unloaded":
+            for record in _iter_records_unloaded_type80(data):
+                yield record
+            return
         iterator = _iterator_from_data(data, record_format=record_format, strict_man=strict_man)
 
     for offset, total_length, payload in iterator:
         decoded = _extract_fields(payload)
-        yield SmfRecord(
-            offset=offset,
-            total_length=total_length,
-            record_length=len(payload),
-            record_type=int(decoded["record_type"]),
-            subtype=decoded["subtype"],
-            system_id=decoded["system_id"],
-            timestamp=decoded["timestamp"],
-            event_code=decoded["event_code"],
-            event_qualifier=decoded["event_qualifier"],
-            user_id=decoded["user_id"],
-            group_name=decoded["group_name"],
-            terminal_id=decoded["terminal_id"],
-            job_name=decoded["job_name"],
-            smf_user_id=decoded["smf_user_id"],
-            product_name=decoded["product_name"],
-            product_version=decoded["product_version"],
-            address_space_user_id=decoded["address_space_user_id"],
-            address_space_group_name=decoded["address_space_group_name"],
-            resource_name=decoded["resource_name"],
-            class_name=decoded["class_name"],
-            profile_name=decoded["profile_name"],
-            authenticated_user_name=decoded["authenticated_user_name"],
-            authenticated_user_registry=decoded["authenticated_user_registry"],
-            authenticated_user_host=decoded["authenticated_user_host"],
-            authenticated_user_oid=decoded["authenticated_user_oid"],
-            distributed_identity_user_name=decoded["distributed_identity_user_name"],
-            distributed_identity_registry=decoded["distributed_identity_registry"],
-            action_hint=decoded["action_hint"],
-            initialization_context=decoded["initialization_context"],
-            compliance_context=decoded["compliance_context"],
-            compliance_summary=decoded["compliance_summary"],
-            compliance_findings=decoded["compliance_findings"],
-            user_id_candidates=decoded["user_id_candidates"],
-            resource_candidates=decoded["resource_candidates"],
-            text_tokens=decoded["text_tokens"],
-            tags=[],
-        )
+        yield _make_smf_record(offset, total_length, len(payload), decoded)
 
 
 def iter_security_records(
