@@ -54,13 +54,20 @@ def _opercmd_output(command: str, verbose: bool = False) -> str | None:
 
 
 def _sear_available() -> bool:
-    """Return True if the pySEAR package is importable."""
-    try:
-        import importlib
-        importlib.import_module("sear")
-        return True
-    except ImportError:
-        return False
+    """Return True if the pySEAR package is importable.
+
+    The PyPI distribution is named ``pysear`` but the importable top-level
+    package is ``sear``.  We catch both ImportError and any other exception
+    that can arise from a broken or partially installed package.
+    """
+    for module_name in ("sear", "pysear"):
+        try:
+            import importlib
+            importlib.import_module(module_name)
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
 
 
 def _query_sear_smf_dataset_profiles(
@@ -81,6 +88,11 @@ def _query_sear_smf_dataset_profiles(
     try:
         from sear import sear  # type: ignore[import-not-found]
     except ImportError:
+        try:
+            from pysear import sear  # type: ignore[import-not-found]
+        except ImportError:
+            return []
+    except Exception:  # noqa: BLE001
         return []
 
     _MAN_SUFFIX_RE = _re.compile(r"\.MAN[A-Z0-9]*$", _re.IGNORECASE)
