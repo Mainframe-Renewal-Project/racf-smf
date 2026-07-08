@@ -341,10 +341,14 @@ def iter_smf_records(
         try:
             iterator = _iter_records_dataset(_read_records_from_dataset(dataset_name))
         except OSError as exc:
-            # Some dataset organizations reject file-positioning operations in
-            # read_as_bytes; fall back to a raw byte-stream parse via copy.
+            # EDC5012I: dataset rejects file-positioning; fall back to copy.
+            # EDC5092I: I/O abend (e.g. non-SMF dataset opened as binary);
+            #            skip the dataset entirely rather than crashing.
             message = str(exc)
-            if getattr(exc, "errno", None) != 12 and "EDC5012I" not in message:
+            errno_val = getattr(exc, "errno", None)
+            if "EDC5092I" in message or errno_val == 92:
+                return
+            if errno_val != 12 and "EDC5012I" not in message:
                 raise
             data = _read_dataset_stream_via_copy(dataset_name)
             iterator = _iterator_from_data(data, record_format=record_format, strict_man=strict_man)

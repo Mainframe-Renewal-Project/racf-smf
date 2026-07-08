@@ -280,9 +280,10 @@ def _query_zsystem_parmlib_search(verbose: bool = False) -> list[str]:
         if not raw_names:
             raw_names = _re.findall(r"\b([A-Z#@$][A-Z0-9#@$]{0,7}(?:\.[A-Z0-9#@$]{1,8}){1,21})\b", text_output or "")
 
+        _MAN_SMF_RE = _re.compile(r"(^|\.)(?:MAN|SMF)[A-Z0-9]*(\.|$)", _re.IGNORECASE)
         resolved = _resolve_smf_variables(raw_names, sysname)
         for name in resolved:
-            if name not in candidates:
+            if _MAN_SMF_RE.search(name) and name not in candidates:
                 candidates.append(name)
 
     if verbose:
