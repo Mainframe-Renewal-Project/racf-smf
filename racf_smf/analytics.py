@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+import os
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +14,46 @@ DEFAULT_SMF_DATASET_PATTERNS: tuple[str, ...] = (
 )
 
 
+def _get_sysname() -> str | None:
+    """Attempt to detect the z/OS system name."""
+    # Environment variable set by z/OS UNIX shell.
+    sysname = os.environ.get("SYSNAME") or os.environ.get("_BPXK_SYSNAME")
+    if sysname:
+        return sysname.strip().upper()
+    # Fallback: uname nodename on z/OS is typically the sysname.
+    try:
+        node = os.uname().nodename.strip().upper()
+        if node:
+            return node
+    except AttributeError:
+        pass
+    return None
+
+
+def _build_default_patterns() -> tuple[str, ...]:
+    sysname = _get_sysname()
+    if sysname:
+        return (
+            f"SYS1.{sysname}.MAN*",
+            "SYS1.*.MAN*",
+            "SYS1.MAN*",
+        )
+    return DEFAULT_SMF_DATASET_PATTERNS
+
+
+def _list_dataset_names(datasets_module, pattern: str, *, include_migrated: bool) -> list[str]:
+    try:
+        return datasets.list_dataset_names(pattern, migrated=include_migrated) or []
+    except TypeError:
+        # Older ZOAU levels may not support the migrated keyword.
+        return datasets.list_dataset_names(pattern) or []
+
+
 def discover_smf_datasets(
     patterns: Iterable[str] | None = None,
     *,
     include_migrated: bool = False,
+    verbose: bool = False,
 ) -> list[str]:
     """Discover candidate SMF MAN datasets using ZOAU dataset listing APIs."""
 
@@ -27,17 +64,18 @@ def discover_smf_datasets(
             "ZOAU is required for automatic dataset discovery. Install zoautil_py first."
         ) from exc
 
-    selected_patterns = tuple(patterns) if patterns is not None else DEFAULT_SMF_DATASET_PATTERNS
+    selected_patterns = tuple(patterns) if patterns is not None else _build_default_patterns()
+
+    if verbose:
+        print(f"Searching patterns: {', '.join(selected_patterns)}", flush=True)
+
     discovered: list[str] = []
     seen: set[str] = set()
 
     for pattern in selected_patterns:
-        try:
-            names = datasets.list_dataset_names(pattern, migrated=include_migrated)
-        except TypeError:
-            # Older ZOAU levels may not support the migrated keyword.
-            names = datasets.list_dataset_names(pattern)
-
+        names = _list_dataset_names(datasets, pattern, include_migrated=include_migrated)
+        if verbose:
+            print(f"  {pattern}: {len(names)} result(s)", flush=True)
         for name in names:
             if name not in seen:
                 seen.add(name)

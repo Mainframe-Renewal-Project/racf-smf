@@ -54,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Dataset name pattern for discovery (repeatable, default: SYS1.*.MAN* and SYS1.MAN*)",
     )
     parser.add_argument(
+        "--list-datasets",
+        action="store_true",
+        help="Print discovered SMF datasets and exit (useful for diagnosing pattern issues)",
+    )
+    parser.add_argument(
         "--format",
         choices=("auto", "rdw", "smf", "man"),
         default="auto",
@@ -109,10 +114,19 @@ def main() -> int:
     tag_counter: Counter[str] = Counter()
 
     if use_discovery:
-        discovered = discover_smf_datasets(args.dataset_patterns or None)
+        discovered = discover_smf_datasets(args.dataset_patterns or None, verbose=True)
         if not discovered:
-            raise SystemExit("No SMF datasets found. Use --dataset-pattern to specify custom patterns.")
+            raise SystemExit(
+                "No SMF datasets found. Try --list-datasets with --dataset-pattern to diagnose."
+            )
+        if args.list_datasets:
+            print(f"\nFound {len(discovered)} dataset(s):")
+            for ds in discovered:
+                print(f"  {ds}")
+            return 0
         print(f"Discovered {len(discovered)} dataset(s): {', '.join(discovered)}", flush=True)
+    elif getattr(args, "list_datasets", False):
+        raise SystemExit("--list-datasets requires discovery mode (omit input or use --discover).")
 
     def _events():
         if use_discovery:
